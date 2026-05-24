@@ -1,0 +1,58 @@
+{
+  "name": "@proof-computer/slipway-js",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./acurast": {
+      "types": "./dist/acurast.d.ts",
+      "import": "./dist/acurast.js"
+    },
+    "./blackbox-logger": {
+      "types": "./dist/blackbox-logger.d.ts",
+      "import": "./dist/blackbox-logger.js"
+    },
+    "./diagnostics": {
+      "types": "./dist/diagnostics.d.ts",
+      "import": "./dist/diagnostics.js"
+    },
+    "./env": {
+      "types": "./dist/env.d.ts",
+      "import": "./dist/env.js"
+    },
+    "./lockbox": {
+      "types": "./dist/lockbox.d.ts",
+      "import": "./dist/lockbox.js"
+    },
+    "./proof-log-crypto": {
+      "types": "./dist/proof-log-crypto.d.ts",
+      "import": "./dist/proof-log-crypto.js"
+    },
+    "./runtime-env": {
+      "types": "./dist/runtime-env.d.ts",
+      "import": "./dist/runtime-env.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
