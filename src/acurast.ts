@@ -54,10 +54,13 @@ export const DEFAULT_ENCRYPTION_KEY_ENV_NAMES = [
   "SWITCHBOARD_MANAGED_ENCRYPTION_PUBLIC_KEY"
 ] as const;
 
+const P256_ENCRYPTION_KEY_PRIME_PUBLIC_KEY =
+  "036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296";
+
 export function createAcurastRuntimeAdapter(options: AcurastRuntimeAdapterOptions = {}): RuntimeIdentityProvider {
   return {
     async resolveIdentity(resolveOptions) {
-      return resolveAcurastRuntimeIdentity(options, resolveOptions);
+      return resolveAcurastRuntimeIdentityAsync(options, resolveOptions);
     },
     async sign(message) {
       return signAcurastRuntimeMessage(options, message);
@@ -68,11 +71,33 @@ export function createAcurastRuntimeAdapter(options: AcurastRuntimeAdapterOption
   };
 }
 
+export async function resolveAcurastRuntimeIdentityAsync(
+  options: AcurastRuntimeAdapterOptions = {},
+  resolveOptions: { requireEncryptionKey?: boolean } = {}
+): Promise<RuntimeIdentity> {
+  const std = resolveRuntimeStd(options.std);
+  if (resolveOptions.requireEncryptionKey === true) {
+    await primeAcurastEncryptionKeys(std);
+  }
+  return resolveAcurastRuntimeIdentityFromStd(std, options, resolveOptions);
+}
+
 export function resolveAcurastRuntimeIdentity(
   options: AcurastRuntimeAdapterOptions = {},
   resolveOptions: { requireEncryptionKey?: boolean } = {}
 ): RuntimeIdentity {
   const std = resolveRuntimeStd(options.std);
+  if (resolveOptions.requireEncryptionKey === true) {
+    primeAcurastEncryptionKeysBestEffort(std);
+  }
+  return resolveAcurastRuntimeIdentityFromStd(std, options, resolveOptions);
+}
+
+function resolveAcurastRuntimeIdentityFromStd(
+  std: AcurastRuntimeStd | undefined,
+  options: AcurastRuntimeAdapterOptions,
+  resolveOptions: { requireEncryptionKey?: boolean }
+): RuntimeIdentity {
   const jobId =
     getFirstRuntimeEnvValue(options.jobIdEnvNames ?? DEFAULT_JOB_ID_ENV_NAMES, options) ??
     stringifyRuntimeValue(std?.job?.getId?.());
@@ -94,6 +119,39 @@ export function resolveAcurastRuntimeIdentity(
     identity.responseEncryptionKey = normalizeHexNoPrefix(responseEncryptionKey);
   }
   return identity;
+}
+
+export interface AcurastEncryptionKeyPrimeResult {
+  attempted: boolean;
+  ok: boolean;
+  errorMessage?: string;
+}
+
+export async function primeAcurastEncryptionKeys(
+  std: AcurastRuntimeStd | undefined = resolveRuntimeStd()
+): Promise<AcurastEncryptionKeyPrimeResult> {
+  const encrypt = std?.signers?.secp256r1?.encrypt;
+  if (typeof encrypt !== "function") return { attempted: false, ok: false };
+  try {
+    await Promise.resolve(encrypt.call(std?.signers?.secp256r1, P256_ENCRYPTION_KEY_PRIME_PUBLIC_KEY, "00", "00"));
+    return { attempted: true, ok: true };
+  } catch (error) {
+    return { attempted: true, ok: false, errorMessage: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function primeAcurastEncryptionKeysBestEffort(std: AcurastRuntimeStd | undefined): void {
+  const encrypt = std?.signers?.secp256r1?.encrypt;
+  if (typeof encrypt !== "function") return;
+  try {
+    const result = encrypt.call(std?.signers?.secp256r1, P256_ENCRYPTION_KEY_PRIME_PUBLIC_KEY, "00", "00");
+    if (typeof (result as Promise<string> | undefined)?.catch === "function") {
+      void (result as Promise<string>).catch(() => undefined);
+    }
+  } catch {
+    // Key priming is best-effort for the legacy synchronous helper. The async
+    // adapter path reports the real failure if the key is still unavailable.
+  }
 }
 
 export async function signAcurastRuntimeMessage(
@@ -136,12 +194,17 @@ export function acurastEd25519PublicKey(std: AcurastRuntimeStd | undefined = res
 }
 
 function encryptionKeyFromStd(std: AcurastRuntimeStd | undefined): string | undefined {
-  const keys = std?.job?.getEncryptionKeys?.();
+  const keys = safeCall(() => std?.job?.getEncryptionKeys?.());
   if (!keys) return undefined;
+  const parsed = typeof keys === "string" ? parseJsonOrUndefined(keys) : keys;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
   for (const name of ["p256", "secp256r1", "secp256r1Encryption", "encP256"]) {
-    const value = keys[name];
+    const value = (parsed as Record<string, unknown>)[name];
     if (typeof value === "string" && value.length > 0) return value;
     if (value instanceof Uint8Array) return Buffer.from(value).toString("hex");
+    if (Array.isArray(value) && value.every((item) => Number.isInteger(item) && item >= 0 && item <= 255)) {
+      return Buffer.from(value).toString("hex");
+    }
   }
   return undefined;
 }
@@ -160,3 +223,19 @@ function parsePublicKeys(value: string): unknown {
   }
 }
 
+function parseJsonOrUndefined(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function safeCall<T>(fn: () => T): T | undefined {
+  try {
+    const value = fn();
+    return value === null || value === undefined ? undefined : value;
+  } catch {
+    return undefined;
+  }
+}

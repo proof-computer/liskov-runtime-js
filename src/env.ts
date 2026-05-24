@@ -3,7 +3,7 @@ export interface AcurastRuntimeStd {
   job?: {
     getId?: () => unknown;
     getPublicKeys?: () => unknown;
-    getEncryptionKeys?: () => Record<string, string | Uint8Array> | undefined;
+    getEncryptionKeys?: () => unknown;
   };
   device?: {
     getAddress?: () => unknown;
@@ -13,6 +13,7 @@ export interface AcurastRuntimeStd {
       sign?: (payloadHex: string) => string | Promise<string>;
     };
     secp256r1?: {
+      encrypt?: (publicKey: string, salt: string, plaintext: string) => string | Promise<string>;
       decrypt?: (publicKey: string, salt: string, ciphertext: string) => string | Promise<string>;
     };
   };
@@ -72,4 +73,3 @@ export function optionalIntegerEnv(name: string, options: RuntimeEnvLookupOption
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
-

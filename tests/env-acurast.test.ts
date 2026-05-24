@@ -58,6 +58,59 @@ describe("runtime env lookup and Acurast adapter", () => {
     })).toString("utf8"), "plaintext");
   });
 
+  it("primes lazy Acurast encryption keys before resolving Lockbox identity", async () => {
+    let primed = false;
+    const std: AcurastRuntimeStd = {
+      job: {
+        getId: () => "job-1",
+        getEncryptionKeys: () => primed ? { p256: "0x" + "02".repeat(33) } : {} as Record<string, string>
+      },
+      device: {
+        getAddress: () => "processor-1"
+      },
+      signers: {
+        secp256r1: {
+          encrypt: () => {
+            primed = true;
+            return "0x00";
+          }
+        }
+      }
+    };
+    const adapter = createAcurastRuntimeAdapter({ env: {}, std });
+
+    assert.deepEqual(await adapter.resolveIdentity({ requireEncryptionKey: true }), {
+      jobId: "job-1",
+      processorId: "processor-1",
+      responseEncryptionKey: "02".repeat(33)
+    });
+  });
+
+  it("ignores legacy JOB_ID and serializes object-shaped Acurast job ids", async () => {
+    const runtimeJobId = [{ acurast: "5GQijf2Pw2jiGhhqXenc7VoYFqmE5RVRk5A3ZKaRviF6HFgd" }, 66121];
+    const std: AcurastRuntimeStd = {
+      job: {
+        getId: () => runtimeJobId,
+        getEncryptionKeys: () => JSON.stringify({ p256: [1, 2, 3] })
+      },
+      device: {
+        getAddress: () => ({ processor: "processor-1" })
+      }
+    };
+    const adapter = createAcurastRuntimeAdapter({
+      env: {
+        JOB_ID: "[object Object]"
+      },
+      std
+    });
+
+    assert.deepEqual(await adapter.resolveIdentity({ requireEncryptionKey: true }), {
+      jobId: JSON.stringify(runtimeJobId),
+      processorId: JSON.stringify({ processor: "processor-1" }),
+      responseEncryptionKey: "010203"
+    });
+  });
+
   it("fails closed when runtime signer, decryptor, or encryption key is missing", async () => {
     const adapter = createAcurastRuntimeAdapter({
       env: {
