@@ -147,6 +147,127 @@ describe("top-level Slipway runtime bootstrap", () => {
     assert.equal(diagnosticBodies.some((body) => body.domain === "proof.slipway.runtime-diagnostic.v1"), true);
     assert.equal(diagnosticBodies.some((body) => body.status === "failed"), true);
   });
+
+  it("starts and stops configurable runtime health diagnostics", async () => {
+    const env: Record<string, string | undefined> = {
+      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+        v: 1,
+        u: "https://slipway.test",
+        a: "generic-worker",
+        p: "1".repeat(64),
+        d: "42",
+        x: { t: "diagnostic-token", h: { i: 7, d: 5, to: 11 } }
+      })
+    };
+    const scheduled: Array<{ delayMs?: number; callback: () => void; timer: { unref(): void } }> = [];
+    let cleared = 0;
+    let sawHealth: () => void;
+    const healthSeen = new Promise<void>((resolve) => {
+      sawHealth = resolve;
+    });
+    const diagnosticBodies: Array<Record<string, unknown>> = [];
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      setTimeoutImpl: (((callback: () => void, delayMs?: number) => {
+        const timer = { unref() {} };
+        scheduled.push({ delayMs, callback, timer });
+        return timer;
+      }) as unknown) as typeof setTimeout,
+      clearTimeoutImpl: ((timer) => {
+        assert.equal(typeof timer, "object");
+        cleared += 1;
+      }) as typeof clearTimeout,
+      fetchImpl: (async (url, init) => {
+        const parsed = new URL(String(url));
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") {
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          diagnosticBodies.push(body);
+          if (body.stage === "runtime.health") sawHealth();
+          return jsonResponse({ ok: true });
+        }
+        return jsonResponse(runtimeEnvResponse());
+      }) as typeof fetch
+    });
+    try {
+      const healthTimer = scheduled.find((item) => item.delayMs === 5);
+      assert.ok(healthTimer);
+      healthTimer.callback();
+      await healthSeen;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(diagnosticBodies.some((body) => body.stage === "runtime.health"), true);
+      assert.equal(scheduled.some((item) => item.delayMs === 7), true);
+    } finally {
+      handle.stop();
+    }
+    assert.equal(cleared >= 2, true);
+  });
+
+  it("disables runtime health when interval is zero", async () => {
+    const env: Record<string, string | undefined> = {
+      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+        v: 1,
+        u: "https://slipway.test",
+        a: "generic-worker",
+        p: "1".repeat(64),
+        d: "42",
+        x: { t: "diagnostic-token", h: { i: 0 } }
+      })
+    };
+    const scheduled: Array<number | undefined> = [];
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      setTimeoutImpl: (((_callback: () => void, delayMs?: number) => {
+        scheduled.push(delayMs);
+        return { unref() {} };
+      }) as unknown) as typeof setTimeout,
+      fetchImpl: (async (url) => {
+        const parsed = new URL(String(url));
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") return jsonResponse({ ok: true });
+        return jsonResponse(runtimeEnvResponse());
+      }) as typeof fetch
+    });
+    try {
+      assert.equal(scheduled.filter((delayMs) => delayMs === 30_000).length, 1);
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("bounds remote diagnostic sends with a timeout", async () => {
+    const env: Record<string, string | undefined> = {
+      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+        v: 1,
+        u: "https://slipway.test",
+        a: "generic-worker",
+        p: "1".repeat(64),
+        d: "42",
+        x: { t: "diagnostic-token" }
+      })
+    };
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      runtimeHealth: { intervalMs: 0 },
+      diagnosticSendTimeoutMs: 1,
+      fetchImpl: (async (url) => {
+        const parsed = new URL(String(url));
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") {
+          return new Promise<Response>(() => undefined);
+        }
+        return jsonResponse(runtimeEnvResponse());
+      }) as typeof fetch
+    });
+    try {
+      assert.equal(handle.runtimeEnv?.response.revision, "runtime-revision-1");
+    } finally {
+      handle.stop();
+    }
+  });
 });
 
 function fakeIdentityProvider(): RuntimeIdentityProvider {

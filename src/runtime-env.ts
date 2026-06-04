@@ -5,6 +5,7 @@ import {
   getRuntimeEnvValue,
   optionalBooleanEnv,
   optionalIntegerEnv,
+  optionalNonNegativeIntegerEnv,
   type RuntimeEnvLookupOptions
 } from "./env.js";
 import {
@@ -32,9 +33,16 @@ export interface SlipwayRuntimeEnvConfig {
   policyDigest: string;
   deploymentId: string;
   diagnosticsToken?: string;
+  runtimeHealth?: SlipwayRuntimeHealthConfig;
   allowInsecureHttp?: boolean;
   requestTtlMs?: number;
   nonce?: string;
+}
+
+export interface SlipwayRuntimeHealthConfig {
+  intervalMs?: number;
+  initialDelayMs?: number;
+  sendTimeoutMs?: number;
 }
 
 export interface SlipwayRuntimeEnvUnsignedRequest {
@@ -123,6 +131,7 @@ export function slipwayRuntimeEnvConfigFromBootstrap(
     policyDigest: normalizePolicyDigest(requiredStringAlias(record, "p", "policyDigest")),
     deploymentId: requiredStringAlias(record, "d", "deploymentId"),
     diagnosticsToken: diagnosticsTokenFromBootstrap(record),
+    runtimeHealth: runtimeHealthConfigFromBootstrap(record, options),
     allowInsecureHttp: Boolean(optionalBooleanEnv("PROOF_SLIPWAY_RUNTIME_ENV_ALLOW_INSECURE_HTTP", options) ?? record.allowInsecureHttp),
     requestTtlMs: optionalIntegerEnv("PROOF_SLIPWAY_RUNTIME_ENV_REQUEST_TTL_MS", options),
     nonce: getRuntimeEnvValue("PROOF_SLIPWAY_RUNTIME_ENV_NONCE", options)
@@ -339,6 +348,39 @@ function diagnosticsTokenFromBootstrap(record: Record<string, unknown>): string 
   const diagnostics = recordOrUndefined(record.x) ?? recordOrUndefined(record.diagnostics);
   const token = diagnostics?.t ?? diagnostics?.token;
   return typeof token === "string" && token.length > 0 ? token : undefined;
+}
+
+function runtimeHealthConfigFromBootstrap(
+  record: Record<string, unknown>,
+  options: RuntimeEnvLookupOptions
+): SlipwayRuntimeHealthConfig | undefined {
+  const diagnostics = recordOrUndefined(record.x) ?? recordOrUndefined(record.diagnostics);
+  const health = recordOrUndefined(diagnostics?.h) ?? recordOrUndefined(diagnostics?.health);
+  const config: SlipwayRuntimeHealthConfig = {
+    intervalMs: optionalNonNegativeIntegerEnv("PROOF_SLIPWAY_RUNTIME_HEALTH_INTERVAL_MS", options) ??
+      nonNegativeIntegerField(health, "i", "intervalMs"),
+    initialDelayMs: optionalNonNegativeIntegerEnv("PROOF_SLIPWAY_RUNTIME_HEALTH_INITIAL_DELAY_MS", options) ??
+      nonNegativeIntegerField(health, "d", "initialDelayMs"),
+    sendTimeoutMs: optionalIntegerEnv("PROOF_SLIPWAY_RUNTIME_DIAGNOSTIC_SEND_TIMEOUT_MS", options) ??
+      positiveIntegerField(health, "to", "timeoutMs", "sendTimeoutMs")
+  };
+  return Object.values(config).some((value) => value !== undefined) ? config : undefined;
+}
+
+function nonNegativeIntegerField(record: Record<string, unknown> | undefined, ...names: string[]): number | undefined {
+  for (const name of names) {
+    const value = record?.[name];
+    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
+  }
+  return undefined;
+}
+
+function positiveIntegerField(record: Record<string, unknown> | undefined, ...names: string[]): number | undefined {
+  for (const name of names) {
+    const value = record?.[name];
+    if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  }
+  return undefined;
 }
 
 async function emit(

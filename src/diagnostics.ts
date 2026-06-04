@@ -6,6 +6,9 @@ import {
 } from "./shared.js";
 
 export const SLIPWAY_RUNTIME_DIAGNOSTIC_DOMAIN = "proof.slipway.runtime-diagnostic.v1";
+export const DEFAULT_SLIPWAY_RUNTIME_HEALTH_INTERVAL_MS = 30_000;
+export const DEFAULT_SLIPWAY_RUNTIME_HEALTH_INITIAL_DELAY_MS = 30_000;
+export const DEFAULT_SLIPWAY_RUNTIME_DIAGNOSTIC_SEND_TIMEOUT_MS = 5_000;
 
 export interface SlipwayRuntimeDiagnostic {
   phase?: "slipway_runtime_env" | "lockbox_secrets" | "refresh_failed" | "skipped";
@@ -33,6 +36,20 @@ export interface SlipwayRuntimeDiagnosticEmitterOptions {
   fetchImpl?: typeof fetch;
   nowMs?: () => number;
   diagnostics?: (event: SlipwayRuntimeDiagnostic) => void | Promise<void>;
+  diagnosticSendTimeoutMs?: number;
+  setTimeoutImpl?: typeof setTimeout;
+  clearTimeoutImpl?: typeof clearTimeout;
+}
+
+export interface SlipwayRuntimeHealthHandle {
+  stop(): void;
+  sendNow(): Promise<void>;
+}
+
+export interface SlipwayRuntimeHealthOptions extends SlipwayRuntimeDiagnosticEmitterOptions {
+  emitter?: SlipwayRuntimeDiagnosticEmitter;
+  intervalMs?: number;
+  initialDelayMs?: number;
 }
 
 export function createSlipwayRuntimeDiagnosticEmitter(
@@ -61,6 +78,43 @@ export function createSlipwayRuntimeDiagnosticEmitter(
   };
 }
 
+export function startSlipwayRuntimeHealth(options: SlipwayRuntimeHealthOptions = {}): SlipwayRuntimeHealthHandle {
+  const intervalMs = nonNegativeInteger(options.intervalMs ?? options.bootstrap?.runtimeHealth?.intervalMs) ??
+    DEFAULT_SLIPWAY_RUNTIME_HEALTH_INTERVAL_MS;
+  const initialDelayMs = nonNegativeInteger(options.initialDelayMs ?? options.bootstrap?.runtimeHealth?.initialDelayMs) ??
+    DEFAULT_SLIPWAY_RUNTIME_HEALTH_INITIAL_DELAY_MS;
+  const setTimeoutImpl = options.setTimeoutImpl ?? setTimeout;
+  const clearTimeoutImpl = options.clearTimeoutImpl ?? clearTimeout;
+  const emitter = options.emitter ?? createSlipwayRuntimeDiagnosticEmitter(options);
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const sendNow = async () => {
+    await emitter.emit({
+      stage: "runtime.health",
+      status: "info",
+      ok: true,
+      component: "runtime-health"
+    });
+  };
+  const schedule = (delayMs: number) => {
+    if (stopped || intervalMs <= 0 || !options.bootstrap?.diagnosticsToken) return;
+    if (timer) clearTimeoutImpl(timer);
+    timer = setTimeoutImpl(() => {
+      void sendNow().finally(() => schedule(intervalMs));
+    }, delayMs);
+    timer.unref?.();
+  };
+  schedule(initialDelayMs);
+  return {
+    stop() {
+      stopped = true;
+      if (timer) clearTimeoutImpl(timer);
+      timer = undefined;
+    },
+    sendNow
+  };
+}
+
 export function redactDiagnostic(diagnostic: SlipwayRuntimeDiagnostic): SlipwayRuntimeDiagnostic {
   return {
     ...diagnostic,
@@ -84,7 +138,7 @@ async function sendSlipwayRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitt
   } catch {
     identity = undefined;
   }
-  const response = await fetchImpl(url.toString(), {
+  const fetchPromise = fetchImpl(url.toString(), {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({
@@ -109,9 +163,45 @@ async function sendSlipwayRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitt
       }
     })
   });
+  const response = await promiseWithTimeout(fetchPromise, diagnosticSendTimeoutMs(input), "Slipway runtime diagnostic send", input);
   if (!response.ok) {
     throw new Error(`Slipway runtime diagnostic rejected request: ${response.status} ${(await response.text()).slice(0, 500)}`);
   }
+}
+
+function diagnosticSendTimeoutMs(input: SlipwayRuntimeDiagnosticEmitterOptions & { bootstrap: SlipwayRuntimeEnvConfig }): number {
+  return positiveInteger(input.diagnosticSendTimeoutMs ?? input.bootstrap.runtimeHealth?.sendTimeoutMs) ??
+    DEFAULT_SLIPWAY_RUNTIME_DIAGNOSTIC_SEND_TIMEOUT_MS;
+}
+
+async function promiseWithTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string,
+  options: Pick<SlipwayRuntimeDiagnosticEmitterOptions, "setTimeoutImpl" | "clearTimeoutImpl">
+): Promise<T> {
+  const setTimeoutImpl = options.setTimeoutImpl ?? setTimeout;
+  const clearTimeoutImpl = options.clearTimeoutImpl ?? clearTimeout;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeoutImpl(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeoutImpl(timer);
+  }
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+function nonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 function redactAttrs(attrs: SlipwayRuntimeDiagnostic["attrs"]): SlipwayRuntimeDiagnostic["attrs"] {
@@ -130,4 +220,3 @@ function isSensitiveKey(key: string): boolean {
 export function diagnosticErrorMessage(error: unknown): string {
   return safeErrorMessage(error);
 }
-

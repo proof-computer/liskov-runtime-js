@@ -73,3 +73,10 @@ export function optionalIntegerEnv(name: string, options: RuntimeEnvLookupOption
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
+
+export function optionalNonNegativeIntegerEnv(name: string, options: RuntimeEnvLookupOptions = {}): number | undefined {
+  const value = getRuntimeEnvValue(name, options);
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}

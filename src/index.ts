@@ -1,5 +1,10 @@
 import { createAcurastRuntimeAdapter, type RuntimeIdentityProvider } from "./acurast.js";
-import { createSlipwayRuntimeDiagnosticEmitter, type SlipwayRuntimeDiagnostic } from "./diagnostics.js";
+import {
+  createSlipwayRuntimeDiagnosticEmitter,
+  startSlipwayRuntimeHealth,
+  type SlipwayRuntimeDiagnostic,
+  type SlipwayRuntimeHealthHandle
+} from "./diagnostics.js";
 import { resolveRuntimeStd, type AcurastRuntimeStd } from "./env.js";
 import {
   loadLockboxRuntimeSecrets,
@@ -33,6 +38,12 @@ export interface BootstrapSlipwayRuntimeOptions {
   nowMs?: () => number;
   randomBytes?: RuntimeRandomBytes;
   diagnostics?: (event: SlipwayRuntimeDiagnostic) => void | Promise<void>;
+  diagnosticSendTimeoutMs?: number;
+  runtimeHealth?: {
+    intervalMs?: number;
+    initialDelayMs?: number;
+    sendTimeoutMs?: number;
+  };
   setTimeoutImpl?: typeof setTimeout;
   clearTimeoutImpl?: typeof clearTimeout;
 }
@@ -42,6 +53,7 @@ export interface BootstrapSlipwayRuntimeHandle {
   refreshNow(): Promise<SlipwayRuntimeEnvLoadResult | undefined>;
   runtimeEnv?: SlipwayRuntimeEnvLoadResult;
   lockbox?: LockboxRuntimeLoadResult;
+  runtimeHealth?: SlipwayRuntimeHealthHandle;
 }
 
 export async function bootstrapSlipwayRuntime(
@@ -58,7 +70,10 @@ export async function bootstrapSlipwayRuntime(
     identityProvider,
     fetchImpl: options.fetchImpl,
     nowMs: options.nowMs,
-    diagnostics: options.diagnostics
+    diagnostics: options.diagnostics,
+    diagnosticSendTimeoutMs: options.diagnosticSendTimeoutMs ?? options.runtimeHealth?.sendTimeoutMs,
+    setTimeoutImpl: options.setTimeoutImpl,
+    clearTimeoutImpl: options.clearTimeoutImpl
   });
 
   await diagnostics.emit({
@@ -73,6 +88,7 @@ export async function bootstrapSlipwayRuntime(
   });
 
   let refreshHandle: SlipwayRuntimeEnvRefreshHandle | undefined;
+  let runtimeHealthHandle: SlipwayRuntimeHealthHandle | undefined;
   let runtimeEnv: SlipwayRuntimeEnvLoadResult | undefined;
   let lockbox: LockboxRuntimeLoadResult | undefined;
   const bridgeRuntimeEnvDiagnostics =
@@ -143,11 +159,25 @@ export async function bootstrapSlipwayRuntime(
     }
   }
 
+  if (slipwayConfig !== undefined) {
+    runtimeHealthHandle = startSlipwayRuntimeHealth({
+      bootstrap: slipwayConfig,
+      emitter: diagnostics,
+      intervalMs: options.runtimeHealth?.intervalMs,
+      initialDelayMs: options.runtimeHealth?.initialDelayMs,
+      diagnosticSendTimeoutMs: options.diagnosticSendTimeoutMs ?? options.runtimeHealth?.sendTimeoutMs,
+      setTimeoutImpl: options.setTimeoutImpl,
+      clearTimeoutImpl: options.clearTimeoutImpl
+    });
+  }
+
   return {
     runtimeEnv,
     lockbox,
+    runtimeHealth: runtimeHealthHandle,
     stop() {
       refreshHandle?.stop();
+      runtimeHealthHandle?.stop();
     },
     async refreshNow() {
       return refreshHandle?.refreshNow();
