@@ -257,7 +257,9 @@ describe("top-level Slipway runtime bootstrap", () => {
       fetchImpl: (async (url) => {
         const parsed = new URL(String(url));
         if (parsed.pathname === "/api/jobs/runtime-diagnostics") {
-          return new Promise<Response>(() => undefined);
+          return new Promise<Response>((resolve) => {
+            setTimeout(() => resolve(jsonResponse({ ok: true })), 25);
+          });
         }
         return jsonResponse(runtimeEnvResponse());
       }) as typeof fetch
@@ -285,7 +287,9 @@ describe("top-level Slipway runtime bootstrap", () => {
       identityProvider: fakeIdentityProvider(),
       nowMs: () => 1_000,
       diagnosticSendTimeoutMs: 1,
-      diagnostics: () => new Promise<void>(() => undefined),
+      diagnostics: () => new Promise<void>((resolve) => {
+        setTimeout(resolve, 25);
+      }),
       fetchImpl: (async (url) => {
         paths.push(new URL(String(url)).pathname);
         return jsonResponse(runtimeEnvResponse());
