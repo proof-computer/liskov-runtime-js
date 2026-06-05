@@ -101,6 +101,7 @@ export interface SlipwayRuntimeEnvDiagnosticEvent {
   valueCount?: number;
   status?: number;
   errorCode?: string;
+  attrs?: Record<string, string | number | boolean | null>;
 }
 
 export interface SlipwayRuntimeEnvLoadResult {
@@ -190,7 +191,15 @@ export async function loadSlipwayRuntimeEnv(input: SlipwayRuntimeEnvLoadOptions)
     const fetchImpl = input.fetchImpl ?? globalThis.fetch;
     if (typeof fetchImpl !== "function") throw new Error("fetch is required for Slipway runtime env bootstrap");
     const identity = await input.identityProvider.resolveIdentity({ requireEncryptionKey: false });
-    await emit(input.diagnostics, { phase: "identity_resolved", ok: true, applicationId: input.config.applicationId });
+    await emit(input.diagnostics, {
+      phase: "identity_resolved",
+      ok: true,
+      applicationId: input.config.applicationId,
+      attrs: {
+        hasJobId: Boolean(identity.jobId),
+        hasProcessorId: Boolean(identity.processorId)
+      }
+    });
     const request = await buildSlipwayRuntimeEnvRequest({
       identityProvider: input.identityProvider,
       config: input.config,
@@ -206,7 +215,8 @@ export async function loadSlipwayRuntimeEnv(input: SlipwayRuntimeEnvLoadOptions)
       ok: true,
       applicationId: response.applicationId,
       revision: response.revision,
-      valueCount: installed.length
+      valueCount: installed.length,
+      attrs: { valueCount: installed.length }
     });
     void identity;
     return { request, response, installed };
@@ -283,7 +293,15 @@ async function postSlipwayRuntimeEnvRequest(input: SlipwayRuntimeEnvLoadOptions 
 }): Promise<SlipwayRuntimeEnvResponse> {
   const url = new URL("/api/jobs/runtime-env", input.config.slipwayUrl);
   assertSecureRuntimeUrl(url, input.config.allowInsecureHttp, "Slipway runtime env");
-  await emit(input.diagnostics, { phase: "runtime_env_request", ok: true, applicationId: input.request.applicationId });
+  await emit(input.diagnostics, {
+    phase: "runtime_env_request",
+    ok: true,
+    applicationId: input.request.applicationId,
+    attrs: {
+      slipwayHost: url.hostname,
+      slipwayProtocol: url.protocol.replace(/:$/u, "")
+    }
+  });
   const response = await input.fetchImpl(url.toString(), {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
@@ -292,6 +310,13 @@ async function postSlipwayRuntimeEnvRequest(input: SlipwayRuntimeEnvLoadOptions 
   const text = await response.text();
   const body = JSON.parse(text) as unknown;
   if (!response.ok) {
+    await emit(input.diagnostics, {
+      phase: "runtime_env_response",
+      ok: false,
+      status: response.status,
+      applicationId: input.request.applicationId,
+      attrs: { statusCode: response.status }
+    });
     throw new Error(`Slipway runtime env rejected request: ${response.status} ${text.slice(0, 500)}`);
   }
   const parsed = parseSlipwayRuntimeEnvResponse(body);
@@ -301,7 +326,8 @@ async function postSlipwayRuntimeEnvRequest(input: SlipwayRuntimeEnvLoadOptions 
     status: response.status,
     applicationId: parsed.applicationId,
     revision: parsed.revision,
-    valueCount: Object.keys(parsed.values).length
+    valueCount: Object.keys(parsed.values).length,
+    attrs: { statusCode: response.status }
   });
   return parsed;
 }

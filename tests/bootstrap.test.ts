@@ -268,6 +268,75 @@ describe("top-level Slipway runtime bootstrap", () => {
       handle.stop();
     }
   });
+
+  it("bounds local diagnostic callbacks so they cannot block runtime env handoff", async () => {
+    const env: Record<string, string | undefined> = {
+      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+        v: 1,
+        u: "https://slipway.test",
+        a: "generic-worker",
+        p: "1".repeat(64),
+        d: "42"
+      })
+    };
+    const paths: string[] = [];
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      diagnosticSendTimeoutMs: 1,
+      diagnostics: () => new Promise<void>(() => undefined),
+      fetchImpl: (async (url) => {
+        paths.push(new URL(String(url)).pathname);
+        return jsonResponse(runtimeEnvResponse());
+      }) as typeof fetch
+    });
+    try {
+      assert.deepEqual(paths, ["/api/jobs/runtime-env"]);
+      assert.equal(handle.runtimeEnv?.response.revision, "runtime-revision-1");
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("backs off remote diagnostics after a failed send and resumes after the backoff window", async () => {
+    const env: Record<string, string | undefined> = {
+      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+        v: 1,
+        u: "https://slipway.test",
+        a: "generic-worker",
+        p: "1".repeat(64),
+        d: "42",
+        x: { t: "diagnostic-token", h: { i: 0 } }
+      })
+    };
+    let now = 1_000;
+    let diagnosticAttempts = 0;
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => now,
+      diagnosticRemoteBackoffMs: 30_000,
+      fetchImpl: (async (url) => {
+        const parsed = new URL(String(url));
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") {
+          diagnosticAttempts += 1;
+          return new Response("temporary failure", { status: 503 });
+        }
+        return jsonResponse(runtimeEnvResponse());
+      }) as typeof fetch
+    });
+    try {
+      assert.equal(diagnosticAttempts, 1);
+      await handle.runtimeHealth?.sendNow();
+      assert.equal(diagnosticAttempts, 1);
+      now = 31_001;
+      await handle.runtimeHealth?.sendNow();
+      assert.equal(diagnosticAttempts, 2);
+    } finally {
+      handle.stop();
+    }
+  });
 });
 
 function fakeIdentityProvider(): RuntimeIdentityProvider {

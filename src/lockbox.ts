@@ -150,6 +150,7 @@ export interface LockboxRuntimeDiagnosticEvent {
   skippedEnvCount?: number;
   status?: number;
   errorCode?: string;
+  attrs?: Record<string, string | number | boolean | null>;
 }
 
 export interface LockboxRuntimeLoadOptions {
@@ -287,17 +288,22 @@ export async function loadLockboxRuntimeSecrets(input: LockboxRuntimeLoadOptions
   try {
     const fetchImpl = input.fetchImpl ?? globalThis.fetch;
     if (typeof fetchImpl !== "function") throw new Error("fetch is required for Lockbox runtime secrets");
-    await emit(input.diagnostics, {
-      phase: "identity_resolved",
-      ok: true,
-      applicationId: input.config.applicationId,
-      grantId: input.config.grantId
-    });
     const request = await buildLockboxRuntimeJobSecretRequest({
       identityProvider: input.identityProvider,
       config: input.config,
       nowMs: input.nowMs?.() ?? Date.now(),
       randomBytes: input.randomBytes
+    });
+    await emit(input.diagnostics, {
+      phase: "identity_resolved",
+      ok: true,
+      applicationId: request.applicationId,
+      grantId: request.grantId,
+      attrs: {
+        hasJobId: Boolean(request.jobId),
+        hasProcessorId: Boolean(request.processorId),
+        hasResponseEncryptionKey: Boolean(request.responseEncryptionKey)
+      }
     });
     await emit(input.diagnostics, {
       phase: "request_signed",
@@ -318,7 +324,11 @@ export async function loadLockboxRuntimeSecrets(input: LockboxRuntimeLoadOptions
       applicationId: payload.applicationId,
       grantId: payload.grantId,
       requestId: payload.requestId,
-      secretCount: payload.secrets.length
+      secretCount: payload.secrets.length,
+      attrs: {
+        requestId: payload.requestId,
+        secretCount: payload.secrets.length
+      }
     });
     const installed = await installLockboxRuntimeSecrets({
       payload,
@@ -336,7 +346,13 @@ export async function loadLockboxRuntimeSecrets(input: LockboxRuntimeLoadOptions
       secretCount: payload.secrets.length,
       installedEnvCount: installed.env.length,
       installedFileCount: installed.files.length,
-      skippedEnvCount: installed.skippedExistingEnv.length
+      skippedEnvCount: installed.skippedExistingEnv.length,
+      attrs: {
+        secretCount: payload.secrets.length,
+        installedEnvCount: installed.env.length,
+        installedFileCount: installed.files.length,
+        skippedEnvCount: installed.skippedExistingEnv.length
+      }
     });
     return { request, response, installed };
   } catch (error) {
@@ -415,7 +431,11 @@ async function postLockboxRuntimeJobSecretRequest(input: LockboxRuntimeLoadOptio
     ok: true,
     applicationId: input.request.applicationId,
     grantId: input.request.grantId,
-    secretCount: input.request.requestedSecretIds.length
+    secretCount: input.request.requestedSecretIds.length,
+    attrs: {
+      lockboxHost: url.hostname,
+      lockboxProtocol: url.protocol.replace(/:$/u, "")
+    }
   });
   const response = await input.fetchImpl(url.toString(), {
     method: "POST",
@@ -423,8 +443,23 @@ async function postLockboxRuntimeJobSecretRequest(input: LockboxRuntimeLoadOptio
     body: JSON.stringify(input.request)
   });
   const text = await response.text();
-  const body = parseJson(text, "Lockbox response");
-  if (!response.ok) throw new Error(`Lockbox rejected secret request: ${response.status} ${text.slice(0, 500)}`);
+  const body = response.ok ? parseJson(text, "Lockbox response") : parseJsonOrUndefined(text);
+  if (!response.ok) {
+    await emit(input.diagnostics, {
+      phase: "lockbox_response",
+      ok: false,
+      status: response.status,
+      applicationId: input.request.applicationId,
+      grantId: input.request.grantId,
+      secretCount: input.request.requestedSecretIds.length,
+      attrs: {
+        statusCode: response.status,
+        errorCode: stringField(body, "error"),
+        retryable: booleanField(body, "retryable")
+      }
+    });
+    throw new Error(`Lockbox rejected secret request: ${response.status} ${text.slice(0, 500)}`);
+  }
   const parsed = parseLockboxRuntimeJobSecretResponse(body);
   assertLockboxResponseBinding({ request: input.request, response: parsed });
   await emit(input.diagnostics, {
@@ -434,7 +469,8 @@ async function postLockboxRuntimeJobSecretRequest(input: LockboxRuntimeLoadOptio
     applicationId: parsed.applicationId,
     grantId: parsed.grantId,
     requestId: parsed.requestId,
-    secretCount: parsed.secretVersions.length
+    secretCount: parsed.secretVersions.length,
+    attrs: { statusCode: response.status }
   });
   return parsed;
 }
@@ -589,6 +625,30 @@ function requiredStringArray(record: Record<string, unknown>, field: string): st
     throw new Error(`${field} must be a string array`);
   }
   return value;
+}
+
+function stringField(value: unknown, field: string): string | null {
+  const record = value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const fieldValue = record[field];
+  return typeof fieldValue === "string" && fieldValue.length > 0 ? fieldValue : null;
+}
+
+function booleanField(value: unknown, field: string): boolean | null {
+  const record = value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const fieldValue = record[field];
+  return typeof fieldValue === "boolean" ? fieldValue : null;
+}
+
+function parseJsonOrUndefined(raw: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 function safeSecretFilePath(baseDir: string, name: string): string {

@@ -1,15 +1,26 @@
 {
   "name": "@proof-computer/slipway-js",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "private": false,
+  "description": "Job-side Slipway runtime bootstrap SDK for PROOF Applications on Acurast.",
   "type": "module",
   "packageManager": "pnpm@10.33.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/proof-computer/slipway-js.git"
+  },
+  "homepage": "https://github.com/proof-computer/slipway-js#readme",
+  "bugs": {
+    "url": "https://github.com/proof-computer/slipway-js/issues"
+  },
+  "license": "MIT",
   "engines": {
     "node": ">=22"
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "SECURITY.md"
   ],
   "exports": {
     ".": {
@@ -47,6 +58,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "pack:dry-run": "npm pack --dry-run --json",
+    "prepare": "npm run build",
     "test": "node --import tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit"
   },

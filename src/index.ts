@@ -1,14 +1,21 @@
-import { createAcurastRuntimeAdapter, type RuntimeIdentityProvider } from "./acurast.js";
+import {
+  DEFAULT_ENCRYPTION_KEY_ENV_NAMES,
+  DEFAULT_JOB_ID_ENV_NAMES,
+  DEFAULT_PROCESSOR_ID_ENV_NAMES,
+  createAcurastRuntimeAdapter,
+  type RuntimeIdentityProvider
+} from "./acurast.js";
 import {
   createSlipwayRuntimeDiagnosticEmitter,
   startSlipwayRuntimeHealth,
   type SlipwayRuntimeDiagnostic,
   type SlipwayRuntimeHealthHandle
 } from "./diagnostics.js";
-import { resolveRuntimeStd, type AcurastRuntimeStd } from "./env.js";
+import { getFirstRuntimeEnvValue, resolveRuntimeStd, type AcurastRuntimeStd } from "./env.js";
 import {
   loadLockboxRuntimeSecrets,
   readLockboxRuntimeConfig,
+  type LockboxRuntimeDiagnosticEvent,
   type LockboxRuntimeLoadResult
 } from "./lockbox.js";
 import {
@@ -19,7 +26,7 @@ import {
   type SlipwayRuntimeEnvLoadResult,
   type SlipwayRuntimeEnvRefreshHandle
 } from "./runtime-env.js";
-import { safeErrorMessage, type RuntimeRandomBytes } from "./shared.js";
+import { type RuntimeRandomBytes } from "./shared.js";
 
 export * from "./acurast.js";
 export * from "./blackbox-logger.js";
@@ -39,6 +46,7 @@ export interface BootstrapSlipwayRuntimeOptions {
   randomBytes?: RuntimeRandomBytes;
   diagnostics?: (event: SlipwayRuntimeDiagnostic) => void | Promise<void>;
   diagnosticSendTimeoutMs?: number;
+  diagnosticRemoteBackoffMs?: number;
   runtimeHealth?: {
     intervalMs?: number;
     initialDelayMs?: number;
@@ -72,6 +80,7 @@ export async function bootstrapSlipwayRuntime(
     nowMs: options.nowMs,
     diagnostics: options.diagnostics,
     diagnosticSendTimeoutMs: options.diagnosticSendTimeoutMs ?? options.runtimeHealth?.sendTimeoutMs,
+    diagnosticRemoteBackoffMs: options.diagnosticRemoteBackoffMs,
     setTimeoutImpl: options.setTimeoutImpl,
     clearTimeoutImpl: options.clearTimeoutImpl
   });
@@ -82,8 +91,8 @@ export async function bootstrapSlipwayRuntime(
     ok: true,
     component: "runtime-bootstrap",
     attrs: {
-      hasSlipwayBootstrap: slipwayConfig !== undefined,
-      hasLockboxBootstrap: lockboxConfig !== undefined
+      ...runtimeCapabilityAttrs(lookup, options.fetchImpl),
+      ...runtimeBootstrapAttrs(lookup, slipwayConfig, lockboxConfig)
     }
   });
 
@@ -93,15 +102,11 @@ export async function bootstrapSlipwayRuntime(
   let lockbox: LockboxRuntimeLoadResult | undefined;
   const bridgeRuntimeEnvDiagnostics =
     async (event: SlipwayRuntimeEnvDiagnosticEvent) => {
-      await diagnostics.emit({
-        phase: event.phase === "refresh_failed" ? "refresh_failed" : "slipway_runtime_env",
-        stage: `slipway.${event.phase}`,
-        status: event.ok ? "succeeded" : "failed",
-        ok: event.ok,
-        valueCount: event.valueCount,
-        revision: event.revision,
-        code: event.errorCode
-      });
+      await diagnostics.emit(slipwayRuntimeEnvDiagnostic(event));
+    };
+  const bridgeLockboxDiagnostics =
+    async (event: LockboxRuntimeDiagnosticEvent) => {
+      await diagnostics.emit(lockboxRuntimeDiagnostic(event));
     };
 
   if (slipwayConfig !== undefined) {
@@ -116,6 +121,12 @@ export async function bootstrapSlipwayRuntime(
       setTimeoutImpl: options.setTimeoutImpl,
       clearTimeoutImpl: options.clearTimeoutImpl
     });
+    await diagnostics.emit({
+      phase: "slipway_runtime_env",
+      stage: "slipway.runtime_env.request",
+      status: "started",
+      ok: true
+    });
     runtimeEnv = await refreshHandle.refreshNow();
   } else {
     await diagnostics.emit({
@@ -127,6 +138,13 @@ export async function bootstrapSlipwayRuntime(
   }
 
   if (lockboxConfig !== undefined) {
+    await diagnostics.emit({
+      phase: "lockbox_secrets",
+      stage: "lockbox.secret_request",
+      status: "started",
+      ok: true,
+      attrs: { requestedSecretCount: lockboxConfig.requestedSecretIds.length }
+    });
     try {
       lockbox = await loadLockboxRuntimeSecrets({
         identityProvider,
@@ -135,26 +153,18 @@ export async function bootstrapSlipwayRuntime(
         fetchImpl: options.fetchImpl,
         nowMs: options.nowMs,
         randomBytes: options.randomBytes,
-        diagnostics: async (event) => {
-          await diagnostics.emit({
-            phase: "lockbox_secrets",
-            stage: `lockbox.${event.phase}`,
-            status: event.ok ? "succeeded" : "failed",
-            ok: event.ok,
-            valueCount: event.secretCount,
-            code: event.errorCode
-          });
-        }
+        diagnostics: bridgeLockboxDiagnostics
       });
-    } catch (error) {
+      const secretCount = lockbox.installed.env.length + lockbox.installed.files.length;
       await diagnostics.emit({
         phase: "lockbox_secrets",
         stage: "lockbox.secret_request",
-        status: "failed",
-        ok: false,
-        code: "lockbox_secret_request_failed",
-        message: safeErrorMessage(error)
+        status: "succeeded",
+        ok: true,
+        valueCount: secretCount,
+        attrs: { secretCount }
       });
+    } catch (error) {
       throw error;
     }
   }
@@ -183,4 +193,141 @@ export async function bootstrapSlipwayRuntime(
       return refreshHandle?.refreshNow();
     }
   };
+}
+
+function slipwayRuntimeEnvDiagnostic(
+  event: SlipwayRuntimeEnvDiagnosticEvent
+): Omit<SlipwayRuntimeDiagnostic, "sequence" | "timestampMs"> {
+  const base = {
+    phase: event.phase === "refresh_failed" ? "refresh_failed" as const : "slipway_runtime_env" as const,
+    ok: event.ok,
+    valueCount: event.valueCount,
+    revision: event.revision,
+    attrs: event.attrs
+  };
+  switch (event.phase) {
+    case "identity_resolved":
+      return { ...base, stage: "slipway.runtime_env.identity", status: "succeeded" };
+    case "request_signed":
+      return { ...base, stage: "slipway.runtime_env.signed", status: "succeeded" };
+    case "runtime_env_request":
+      return event.ok
+        ? { ...base, stage: "slipway.runtime_env.fetch", status: "started" }
+        : {
+            ...base,
+            stage: "slipway.runtime_env.request",
+            status: "failed",
+            code: "runtime_env_request_failed",
+            message: event.errorCode,
+            error: event.errorCode
+          };
+    case "runtime_env_response":
+      return { ...base, stage: "slipway.runtime_env.response", status: event.ok ? "succeeded" : "failed" };
+    case "env_installed":
+      return { ...base, stage: "slipway.runtime_env.applied", status: "succeeded" };
+    case "refresh_failed":
+      return {
+        ...base,
+        stage: "slipway.runtime_env.refresh",
+        status: "failed",
+        code: "runtime_env_refresh_failed",
+        message: event.errorCode,
+        error: event.errorCode
+      };
+  }
+}
+
+function lockboxRuntimeDiagnostic(
+  event: LockboxRuntimeDiagnosticEvent
+): Omit<SlipwayRuntimeDiagnostic, "sequence" | "timestampMs"> {
+  const base = {
+    phase: "lockbox_secrets" as const,
+    ok: event.ok,
+    valueCount: event.secretCount,
+    attrs: event.attrs
+  };
+  switch (event.phase) {
+    case "identity_resolved":
+      return { ...base, stage: "lockbox.secret_request.identity", status: "succeeded" };
+    case "request_signed":
+      return { ...base, stage: "lockbox.secret_request.signed", status: "succeeded" };
+    case "lockbox_request":
+      return { ...base, stage: "lockbox.secret_request.fetch", status: "started" };
+    case "lockbox_response":
+      return { ...base, stage: "lockbox.secret_request.response", status: event.ok ? "succeeded" : "failed" };
+    case "payload_decrypted":
+      return { ...base, stage: "lockbox.secret_request.decrypted", status: "succeeded" };
+    case "secrets_installed":
+      return { ...base, stage: "lockbox.secret_request.installed", status: "succeeded" };
+    case "bootstrap_failed":
+      return {
+        ...base,
+        stage: "lockbox.secret_request",
+        status: "failed",
+        code: "lockbox_secret_request_failed",
+        message: event.errorCode,
+        error: event.errorCode
+      };
+  }
+}
+
+function runtimeCapabilityAttrs(
+  lookup: { env: Record<string, string | undefined>; std?: AcurastRuntimeStd; environment?: (name: string) => unknown },
+  fetchImpl?: typeof fetch
+): Record<string, boolean> {
+  const std = lookup.std;
+  return {
+    hasFetch: typeof fetchImpl === "function" || typeof (globalThis as { fetch?: unknown }).fetch === "function",
+    hasStdEnv: Boolean(std?.env),
+    hasStdJob: Boolean(std?.job),
+    hasJobId: Boolean(getFirstRuntimeEnvValue(DEFAULT_JOB_ID_ENV_NAMES, lookup) ?? stringifyRuntimeValue(std?.job?.getId?.())),
+    hasEncryptionKeys: typeof std?.job?.getEncryptionKeys === "function",
+    hasDeviceAddress: Boolean(getFirstRuntimeEnvValue(DEFAULT_PROCESSOR_ID_ENV_NAMES, lookup) ?? stringifyRuntimeValue(std?.device?.getAddress?.())),
+    hasEd25519Signer: typeof std?.signers?.ed25519?.sign === "function",
+    hasSecp256r1Encrypt: typeof std?.signers?.secp256r1?.encrypt === "function",
+    hasSecp256r1Decrypt: typeof std?.signers?.secp256r1?.decrypt === "function"
+  };
+}
+
+function runtimeBootstrapAttrs(
+  lookup: { env: Record<string, string | undefined>; std?: AcurastRuntimeStd; environment?: (name: string) => unknown },
+  slipwayConfig: ReturnType<typeof readSlipwayRuntimeEnvConfig>,
+  lockboxConfig: ReturnType<typeof readLockboxRuntimeConfig>
+): Record<string, string | number | boolean | null> {
+  return {
+    hasSlipwayBootstrap: Boolean(slipwayConfig),
+    hasSlipwayDiagnosticsToken: Boolean(slipwayConfig?.diagnosticsToken),
+    hasLockboxBootstrap: Boolean(lockboxConfig),
+    slipwayBootstrapSource: runtimeEnvSource("PROOF_SLIPWAY_BOOTSTRAP", lookup),
+    lockboxBootstrapSource: runtimeEnvSource("PROOF_LOCKBOX_BOOTSTRAP", lookup),
+    slipwayHost: urlHostOrNull(slipwayConfig?.slipwayUrl),
+    lockboxHost: urlHostOrNull(lockboxConfig?.lockboxUrl),
+    applicationId: slipwayConfig?.applicationId ?? lockboxConfig?.applicationId ?? null,
+    deploymentId: slipwayConfig?.deploymentId ?? lockboxConfig?.deploymentId ?? null
+  };
+}
+
+function runtimeEnvSource(
+  name: string,
+  lookup: { env: Record<string, string | undefined>; std?: AcurastRuntimeStd; environment?: (name: string) => unknown }
+): "process" | "std" | "environment" | "none" {
+  if (lookup.env[name]) return "process";
+  if (lookup.std?.env?.[name]) return "std";
+  if (lookup.environment?.(name) !== undefined) return "environment";
+  return "none";
+}
+
+function urlHostOrNull(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function stringifyRuntimeValue(value: unknown): string | undefined {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (value === undefined || value === null) return undefined;
+  return JSON.stringify(value);
 }
