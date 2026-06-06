@@ -73,6 +73,10 @@ export async function bootstrapSlipwayRuntime(
   const identityProvider = options.identityProvider ?? createAcurastRuntimeAdapter(lookup);
   const slipwayConfig = readSlipwayRuntimeEnvConfig(lookup);
   const lockboxConfig = readLockboxRuntimeConfig(lookup);
+  await allowBootstrapHostnames(std, [
+    urlHostOrNull(slipwayConfig?.slipwayUrl),
+    urlHostOrNull(lockboxConfig?.lockboxUrl)
+  ]);
   const diagnostics = createSlipwayRuntimeDiagnosticEmitter({
     bootstrap: slipwayConfig,
     identityProvider,
@@ -315,6 +319,23 @@ function runtimeEnvSource(
   if (lookup.std?.env?.[name]) return "std";
   if (lookup.environment?.(name) !== undefined) return "environment";
   return "none";
+}
+
+async function allowBootstrapHostnames(
+  std: AcurastRuntimeStd | undefined,
+  hostnames: Array<string | null>
+): Promise<void> {
+  const net = std?.net;
+  const addAllowedHostnames = net?.addAllowedHostnames;
+  if (typeof addAllowedHostnames !== "function") return;
+  const uniqueHostnames = [...new Set(hostnames.filter((hostname): hostname is string => Boolean(hostname)))];
+  if (uniqueHostnames.length === 0) return;
+  try {
+    await Promise.resolve(addAllowedHostnames.call(net, uniqueHostnames));
+  } catch {
+    // Acurast network allowlisting is a bootstrap accelerator. The following
+    // diagnostic/runtime-env requests still report the real network failure.
+  }
 }
 
 function urlHostOrNull(value: string | undefined): string | null {

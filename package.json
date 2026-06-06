@@ -1,6 +1,6 @@
 {
   "name": "@proof-computer/slipway-js",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "Job-side Slipway runtime bootstrap SDK for PROOF Applications on Acurast.",
   "type": "module",

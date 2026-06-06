@@ -14,7 +14,7 @@ The first supported dependency source is the public GitHub release tag:
 ```json
 {
   "dependencies": {
-    "@proof-computer/slipway-js": "github:proof-computer/slipway-js#v0.1.0"
+    "@proof-computer/slipway-js": "github:proof-computer/slipway-js#v0.1.1"
   }
 }
 ```

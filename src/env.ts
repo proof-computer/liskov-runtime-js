@@ -8,6 +8,9 @@ export interface AcurastRuntimeStd {
   device?: {
     getAddress?: () => unknown;
   };
+  net?: {
+    addAllowedHostnames?: (hostnames: string[]) => unknown | Promise<unknown>;
+  };
   signers?: {
     ed25519?: {
       sign?: (payloadHex: string) => string | Promise<string>;

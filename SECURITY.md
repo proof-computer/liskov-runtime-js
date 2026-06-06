@@ -43,7 +43,7 @@ Use this checklist before cutting a public `@proof-computer/slipway-js` tag.
 
 ## Package Artifact
 
-- `package.json` must be public-ready: `private: false`, version `0.1.0`, and
+- `package.json` must be public-ready: `private: false`, version `0.1.1`, and
   repository metadata pointing at `proof-computer/slipway-js`.
 - The package `files` allowlist must include only `dist`, `README.md`, and
   `SECURITY.md`.

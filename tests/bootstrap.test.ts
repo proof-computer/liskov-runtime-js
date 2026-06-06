@@ -56,6 +56,58 @@ describe("top-level Slipway runtime bootstrap", () => {
     }
   });
 
+  it("allowlists bootstrap hosts before Slipway and Lockbox network requests", async () => {
+    const env: Record<string, string | undefined> = {
+      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+        v: 1,
+        u: "https://slipway.test",
+        a: "generic-worker",
+        p: "1".repeat(64),
+        d: "42"
+      }),
+      PROOF_LOCKBOX_BOOTSTRAP: JSON.stringify({
+        v: 1,
+        u: "https://lockbox.test",
+        a: "generic-worker",
+        g: "grant-1",
+        p: "1".repeat(64),
+        d: "42",
+        s: ["api-token"]
+      })
+    };
+    const order: string[] = [];
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      std: {
+        net: {
+          addAllowedHostnames: async (hostnames) => {
+            order.push(`allow:${hostnames.join(",")}`);
+          }
+        }
+      },
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      fetchImpl: (async (url, init) => {
+        const parsed = new URL(String(url));
+        order.push(`fetch:${parsed.pathname}`);
+        if (parsed.pathname === "/api/jobs/runtime-env") {
+          return jsonResponse(runtimeEnvResponse());
+        }
+        const request = JSON.parse(String(init?.body)) as { requestedSecretIds: string[] };
+        return jsonResponse(lockboxResponse(request));
+      }) as typeof fetch
+    });
+    try {
+      assert.deepEqual(order, [
+        "allow:slipway.test,lockbox.test",
+        "fetch:/api/jobs/runtime-env",
+        "fetch:/api/jobs/secret-requests"
+      ]);
+    } finally {
+      handle.stop();
+    }
+  });
+
   it("skips Lockbox when no Lockbox bootstrap is present", async () => {
     const env: Record<string, string | undefined> = {
       PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
