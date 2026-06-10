@@ -138,6 +138,21 @@ await log("runtime.ready", { revision: "runtime-revision-1" });
 
 The logger signs batch writes with the Acurast Ed25519 runtime signer.
 
+Two `BLACKBOX_LOG_CONFIG` shapes are accepted:
+
+- Pre-bound sink: `sinkId` + `jobId` + `writeUrl` + `dek`.
+- Factory token: `factoryToken` + `baseUrl` + `dek`. The writer self-registers
+  its job-bound sink on the first flush (resolving the job id from runtime env
+  or `_STD_.job.getId()`), so the config can ship as a plain pre-boot secret
+  and first-boot/`prepare()` failures are captured from the very first write.
+
+Records are encrypted immediately and spooled locally (disk under `spoolDir`
+when writable, otherwise in memory), then batched and flushed once the sink is
+reachable. Disk spool state persists the resolved sink id and hash-chain
+sequence so a restarted writer continues its chain instead of conflicting. An
+unrecognized config shape reports through `onError` on every write instead of
+degrading into a silent no-op.
+
 ## Security Boundaries
 
 - Do not put Slipway server control tokens in runtime env or diagnostics.

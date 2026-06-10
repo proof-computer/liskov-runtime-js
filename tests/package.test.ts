@@ -12,11 +12,11 @@ interface PackageJson {
 }
 
 describe("public package metadata", () => {
-  it("is ready for the v0.1.1 public GitHub tag install path", async () => {
+  it("is ready for the v0.2.0 public GitHub tag install path", async () => {
     const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as PackageJson;
 
     assert.equal(packageJson.name, "@proof-computer/slipway-js");
-    assert.equal(packageJson.version, "0.1.1");
+    assert.equal(packageJson.version, "0.2.0");
     assert.equal(packageJson.private, false);
     assert.deepEqual(packageJson.repository, {
       type: "git",
