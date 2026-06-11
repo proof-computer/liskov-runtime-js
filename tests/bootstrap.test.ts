@@ -4,10 +4,15 @@ import { describe, it } from "node:test";
 
 import {
   bootstrapSlipwayRuntime,
+  decryptProofLogRecord,
+  generateProofLogEncryptionKey,
   lockboxEncryptedPayloadDigest,
+  type BlackboxLogBatch,
   type LockboxRuntimeJobSecretPlaintextPayload,
   type RuntimeIdentityProvider
 } from "../src/index.js";
+
+type LockboxPlaintextSecret = LockboxRuntimeJobSecretPlaintextPayload["secrets"][number];
 
 describe("top-level Slipway runtime bootstrap", () => {
   it("loads Slipway runtime env before Lockbox secrets and returns a refresh handle", async () => {
@@ -110,6 +115,7 @@ describe("top-level Slipway runtime bootstrap", () => {
 
   it("skips Lockbox when no Lockbox bootstrap is present", async () => {
     const env: Record<string, string | undefined> = {
+      HOME: "/home/runtime",
       PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://slipway.test",
@@ -129,8 +135,502 @@ describe("top-level Slipway runtime bootstrap", () => {
       }) as typeof fetch
     });
     try {
+      assert.equal(handle.home, "/home/runtime/.slipway");
       assert.deepEqual(paths, ["/api/jobs/runtime-env"]);
       assert.equal(handle.lockbox, undefined);
+      assert.equal(handle.env.get("RUNTIME_VALUE"), "ok");
+      assert.equal(handle.env.require("RUNTIME_VALUE"), "ok");
+      const status = handle.status();
+      assert.equal(status.ready, true);
+      assert.equal(status.capabilities.runtimeEnv.state, "ready");
+      assert.equal(status.capabilities.secrets.state, "off");
+      assert.equal(status.capabilities.logging.state, "off");
+      assert.equal((await handle.whenReady()).ready, true);
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("fails closed when required Lockbox secrets are rejected", async () => {
+    const env: Record<string, string | undefined> = {
+      PROOF_LOCKBOX_BOOTSTRAP: JSON.stringify({
+        v: 1,
+        u: "https://lockbox.test",
+        a: "generic-worker",
+        g: "grant-1",
+        p: "1".repeat(64),
+        d: "42",
+        s: ["api-token"]
+      })
+    };
+    const diagnostics: Array<{ code?: string; message?: string; error?: string; attrs?: Record<string, unknown> }> = [];
+    await assert.rejects(() => bootstrapSlipwayRuntime({
+      env,
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      diagnostics: (event) => {
+        diagnostics.push({
+          code: event.code,
+          message: event.message,
+          error: event.error,
+          attrs: event.attrs
+        });
+      },
+      fetchImpl: (async () => new Response(JSON.stringify({
+        ok: false,
+        error: "grant_pending",
+        retryable: true
+      }), {
+        status: 409,
+        headers: { "content-type": "application/json" }
+      })) as typeof fetch
+    }), /Lockbox rejected secret request/u);
+    assert.equal(env.API_TOKEN, undefined);
+    assert.equal(diagnostics.some((event) => event.code === "lockbox_secret_request_failed"), true);
+    assert.equal(JSON.stringify(diagnostics).includes("api-token"), false);
+    assert.equal(JSON.stringify(diagnostics).includes("API_TOKEN"), false);
+  });
+
+  it("returns before background secrets load, then retries and installs env secrets", async () => {
+    const dek = generateProofLogEncryptionKey();
+    const payload = plaintextPayload([
+      {
+        secretId: "api-token",
+        versionId: "version-1",
+        target: "env",
+        name: "API_TOKEN",
+        required: true,
+        bundleId: "default",
+        value: "secret"
+      },
+      {
+        secretId: "blackbox-log-config",
+        versionId: "version-blackbox-1",
+        target: "env",
+        name: "BLACKBOX_LOG_CONFIG",
+        required: true,
+        bundleId: "blackbox-log-config",
+        value: JSON.stringify({
+          factoryToken: "bbx_sf_background_secret",
+          baseUrl: "https://logging.slipway.proof.computer",
+          dek
+        })
+      }
+    ]);
+    const env: Record<string, string | undefined> = {
+      PROOF_LOCKBOX_BOOTSTRAP: JSON.stringify({
+        v: 1,
+        u: "https://lockbox.test",
+        a: "generic-worker",
+        g: "grant-1",
+        p: "1".repeat(64),
+        d: "42",
+        s: ["api-token", "blackbox-log-config"]
+      })
+    };
+    const timers: Array<{ delayMs?: number; callback: () => void; timer: { unref(): void } }> = [];
+    const paths: string[] = [];
+    let secretRequests = 0;
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      std: blackboxRuntimeStd(),
+      secrets: {
+        mode: "background",
+        retry: { intervalMs: 25, maxAttempts: 2, maxElapsedMs: 1_000 }
+      },
+      logging: { mode: "background", spoolMode: "memory" },
+      identityProvider: fakeIdentityProvider(payload),
+      nowMs: () => 1_000,
+      setTimeoutImpl: (((callback: () => void, delayMs?: number) => {
+        const timer = { unref() {} };
+        timers.push({ delayMs, callback, timer });
+        return timer;
+      }) as unknown) as typeof setTimeout,
+      fetchImpl: (async (url, init) => {
+        const parsed = new URL(String(url));
+        paths.push(parsed.pathname);
+        if (parsed.pathname === "/api/jobs/secret-requests") {
+          secretRequests += 1;
+          if (secretRequests === 1) {
+            return new Response(JSON.stringify({ ok: false, error: "grant_pending", retryable: true }), {
+              status: 409,
+              headers: { "content-type": "application/json" }
+            });
+          }
+          const request = JSON.parse(String(init?.body)) as { requestedSecretIds: string[] };
+          return jsonResponse(lockboxResponse(request, payload));
+        }
+        if (parsed.pathname.endsWith("/job-sinks")) return jsonResponse({ sinkId: "sink-background-777" });
+        return jsonResponse({ ok: true });
+      }) as typeof fetch
+    });
+    try {
+      assert.equal(secretRequests, 0);
+      assert.equal(handle.status().ready, true);
+      assert.equal(handle.status().capabilities.secrets.state, "pending");
+      assert.equal(timers[0]?.delayMs, 0);
+
+      timers[0]!.callback();
+      await flushAsyncWork();
+      assert.equal(secretRequests, 1);
+      assert.equal(env.API_TOKEN, undefined);
+      assert.equal(handle.status().capabilities.secrets.state, "degraded");
+      assert.equal(handle.status().capabilities.secrets.code, "lockbox_secret_request_retrying");
+      assert.equal(timers[1]?.delayMs, 25);
+
+      timers[1]!.callback();
+      await flushAsyncWork();
+      assert.equal(secretRequests, 2);
+      assert.equal(env.API_TOKEN, "secret");
+      assert.equal(handle.lockbox?.installed.env.length, 2);
+      assert.equal(handle.status().capabilities.secrets.state, "ready");
+      assert.equal(handle.status().capabilities.logging.state, "ready");
+
+      await handle.log("diagnostic.background");
+      assert.deepEqual(paths.slice(-2), [
+        "/v1/sink-factories/background/job-sinks",
+        "/v1/sinks/sink-background-777/events"
+      ]);
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("keeps background secret failure non-blocking after retry exhaustion", async () => {
+    const env: Record<string, string | undefined> = {
+      PROOF_LOCKBOX_BOOTSTRAP: JSON.stringify({
+        v: 1,
+        u: "https://lockbox.test",
+        a: "generic-worker",
+        g: "grant-1",
+        p: "1".repeat(64),
+        d: "42",
+        s: ["api-token"]
+      })
+    };
+    const diagnostics: Array<{ code?: string; message?: string; error?: string; attrs?: Record<string, unknown> }> = [];
+    const timers: Array<{ delayMs?: number; callback: () => void; timer: { unref(): void } }> = [];
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      secrets: {
+        mode: "background",
+        retry: { maxAttempts: 1, maxElapsedMs: 1_000 }
+      },
+      identityProvider: fakeIdentityProvider(plaintextPayload([{
+        secretId: "api-token",
+        versionId: "version-1",
+        target: "env",
+        name: "API_TOKEN",
+        required: true,
+        bundleId: "default",
+        value: "super-secret-background-value"
+      }])),
+      nowMs: () => 1_000,
+      diagnostics: (event) => {
+        diagnostics.push({
+          code: event.code,
+          message: event.message,
+          error: event.error,
+          attrs: event.attrs
+        });
+      },
+      setTimeoutImpl: (((callback: () => void, delayMs?: number) => {
+        const timer = { unref() {} };
+        timers.push({ delayMs, callback, timer });
+        return timer;
+      }) as unknown) as typeof setTimeout,
+      fetchImpl: (async () => new Response(JSON.stringify({
+        ok: false,
+        error: "grant_pending",
+        retryable: true
+      }), {
+        status: 409,
+        headers: { "content-type": "application/json" }
+      })) as typeof fetch
+    });
+    try {
+      assert.equal(handle.status().ready, true);
+      timers[0]!.callback();
+      await handle.refreshNow();
+      const status = handle.status();
+      assert.equal(status.ready, true);
+      assert.equal(status.capabilities.secrets.state, "failed");
+      assert.equal(status.capabilities.secrets.required, false);
+      assert.equal(status.capabilities.secrets.code, "lockbox_secret_request_failed");
+      assert.equal(env.API_TOKEN, undefined);
+      assert.equal(timers.filter((timer) => timer.delayMs === 0).length, 1);
+      assert.equal(timers.some((timer) => timer.delayMs === 5_000), false);
+      assert.equal(JSON.stringify(diagnostics).includes("super-secret-background-value"), false);
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("stops scheduled background secret retries", async () => {
+    const env: Record<string, string | undefined> = {
+      PROOF_LOCKBOX_BOOTSTRAP: JSON.stringify({
+        v: 1,
+        u: "https://lockbox.test",
+        a: "generic-worker",
+        g: "grant-1",
+        p: "1".repeat(64),
+        d: "42",
+        s: ["api-token"]
+      })
+    };
+    let scheduled = 0;
+    let cleared = 0;
+    let secretRequests = 0;
+    const timer = { unref() {} } as unknown as ReturnType<typeof setTimeout>;
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      secrets: { mode: "background" },
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      setTimeoutImpl: ((() => {
+        scheduled += 1;
+        return timer;
+      }) as unknown) as typeof setTimeout,
+      clearTimeoutImpl: ((seen) => {
+        assert.equal(seen, timer);
+        cleared += 1;
+      }) as typeof clearTimeout,
+      fetchImpl: (async () => {
+        secretRequests += 1;
+        return jsonResponse({});
+      }) as typeof fetch
+    });
+    handle.stop();
+    assert.equal(scheduled, 1);
+    assert.equal(cleared, 1);
+    assert.equal(secretRequests, 0);
+  });
+
+  it("uses SLIPWAY_HOME and attaches env-delivered factory-token logging", async () => {
+    const dek = generateProofLogEncryptionKey();
+    const env: Record<string, string | undefined> = {
+      SLIPWAY_HOME: "/runtime/slipway",
+      BLACKBOX_LOG_CONFIG: JSON.stringify({
+        factoryToken: "bbx_sf_test_secret",
+        baseUrl: "https://logging.slipway.proof.computer",
+        applicationId: "diagnostic",
+        dek
+      })
+    };
+    const calls: Array<{ url: string; headers: Record<string, string>; body: string }> = [];
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      std: blackboxRuntimeStd(),
+      logging: { mode: "background", spoolMode: "memory" },
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      fetchImpl: (async (url, init) => {
+        calls.push({
+          url: String(url),
+          headers: init?.headers as Record<string, string>,
+          body: String(init?.body)
+        });
+        return String(url).endsWith("/job-sinks")
+          ? jsonResponse({ sink: { sinkId: "sink-job-777" } })
+          : jsonResponse({ ok: true });
+      }) as typeof fetch
+    });
+    try {
+      assert.equal(handle.home, "/runtime/slipway");
+      const status = handle.status();
+      assert.equal(status.ready, true);
+      assert.equal(status.capabilities.logging.state, "ready");
+      assert.equal(status.capabilities.logging.required, false);
+      assert.match(status.capabilities.logging.fingerprint ?? "", /^0x[0-9a-f]{64}$/u);
+      await handle.log("diagnostic.boot", { ok: true }, { severity: "debug", labels: { app: "diagnostic" } });
+      assert.equal(calls[0]?.url, "https://logging.slipway.proof.computer/v1/sink-factories/test/job-sinks");
+      assert.equal(calls[0]?.headers["x-blackbox-sink-factory-token"], "bbx_sf_test_secret");
+      assert.deepEqual(JSON.parse(calls[0]!.body), { applicationId: "diagnostic", jobId: "777" });
+
+      assert.equal(calls[1]?.url, "https://logging.slipway.proof.computer/v1/sinks/sink-job-777/events");
+      const batch = JSON.parse(calls[1]!.body) as BlackboxLogBatch;
+      const record = decryptProofLogRecord<Record<string, unknown>>(dek, batch.encrypted[0]!);
+      const details = record.details as { ok?: boolean; _slipwayRuntime?: { severity?: string; labels?: Record<string, string> } };
+      assert.equal(record.event, "diagnostic.boot");
+      assert.deepEqual(details.ok, true);
+      assert.deepEqual(details._slipwayRuntime?.severity, "debug");
+      assert.deepEqual(details._slipwayRuntime?.labels, { app: "diagnostic" });
+      assert.deepEqual(await handle.flush(), { ok: true, state: "ready", flushed: 0, pending: 0, dropped: 0, message: undefined });
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("attaches Lockbox-delivered logging config before runtime.log writes", async () => {
+    const dek = generateProofLogEncryptionKey();
+    const payload = plaintextPayload([{
+      secretId: "blackbox-log-config",
+      versionId: "version-blackbox-1",
+      target: "env",
+      name: "BLACKBOX_LOG_CONFIG",
+      required: true,
+      bundleId: "blackbox-log-config",
+      value: JSON.stringify({
+        factoryToken: "bbx_sf_lockbox_secret",
+        baseUrl: "https://logging.slipway.proof.computer",
+        dek
+      })
+    }]);
+    const env: Record<string, string | undefined> = {
+      PROOF_LOCKBOX_BOOTSTRAP: JSON.stringify({
+        v: 1,
+        u: "https://lockbox.test",
+        a: "generic-worker",
+        g: "grant-1",
+        p: "1".repeat(64),
+        d: "42",
+        s: ["blackbox-log-config"]
+      })
+    };
+    const calls: string[] = [];
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      std: blackboxRuntimeStd(),
+      logging: { mode: "required", spoolMode: "memory" },
+      identityProvider: fakeIdentityProvider(payload),
+      nowMs: () => 1_000,
+      fetchImpl: (async (url, init) => {
+        const parsed = new URL(String(url));
+        calls.push(parsed.pathname);
+        if (parsed.pathname === "/api/jobs/secret-requests") {
+          const request = JSON.parse(String(init?.body)) as { requestedSecretIds: string[] };
+          return jsonResponse(lockboxResponse(request, payload));
+        }
+        if (parsed.pathname.endsWith("/job-sinks")) return jsonResponse({ sinkId: "sink-lockbox-777" });
+        return jsonResponse({ ok: true });
+      }) as typeof fetch
+    });
+    try {
+      const status = handle.status();
+      assert.equal(status.ready, true);
+      assert.equal(status.capabilities.logging.state, "ready");
+      assert.equal(env.BLACKBOX_LOG_CONFIG, payload.secrets[0]?.value);
+      await handle.log("diagnostic.lockbox");
+      assert.deepEqual(calls, [
+        "/api/jobs/secret-requests",
+        "/v1/sink-factories/lockbox/job-sinks",
+        "/v1/sinks/sink-lockbox-777/events"
+      ]);
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("drains logs buffered before config appears on refresh", async () => {
+    const dek = generateProofLogEncryptionKey();
+    const env: Record<string, string | undefined> = {};
+    const batches: BlackboxLogBatch[] = [];
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      std: blackboxRuntimeStd(),
+      logging: { mode: "background", spoolMode: "memory", earlyBufferMaxRecords: 2 },
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      fetchImpl: (async (url, init) => {
+        if (String(url).endsWith("/job-sinks")) return jsonResponse({ sinkId: "sink-refresh-777" });
+        batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
+        return jsonResponse({ ok: true });
+      }) as typeof fetch
+    });
+    try {
+      await handle.log("before-config", { boot: true });
+      assert.equal(handle.status().capabilities.logging.state, "pending");
+      env.BLACKBOX_LOG_CONFIG = JSON.stringify({
+        factoryToken: "bbx_sf_refresh_secret",
+        baseUrl: "https://logging.slipway.proof.computer",
+        dek
+      });
+      await handle.refreshNow();
+      assert.equal(handle.status().capabilities.logging.state, "ready");
+      assert.equal(batches.length, 1);
+      const events = batches[0]!.encrypted.map((record) =>
+        decryptProofLogRecord<Record<string, unknown>>(dek, record).event
+      );
+      assert.deepEqual(events, ["before-config"]);
+      assert.deepEqual(await handle.flush(), { ok: true, state: "ready", flushed: 0, pending: 0, dropped: 0, message: undefined });
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("reports invalid required logging config as a readiness blocker", async () => {
+    const diagnostics: Array<{ code?: string; stage: string; status: string }> = [];
+    const env: Record<string, string | undefined> = {
+      BLACKBOX_LOG_CONFIG: JSON.stringify({ mystery: true })
+    };
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      std: blackboxRuntimeStd(),
+      logging: { mode: "required", spoolMode: "memory" },
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      diagnostics: (event) => {
+        diagnostics.push({ code: event.code, stage: event.stage, status: event.status });
+      }
+    });
+    try {
+      const status = handle.status();
+      assert.equal(status.ready, false);
+      assert.equal(status.capabilities.logging.state, "failed");
+      assert.equal(status.blockers[0]?.capability, "logging");
+      assert.equal(status.blockers[0]?.code, "slipway_logging_config_invalid");
+      assert.equal(diagnostics.some((event) => event.code === "slipway_logging_config_invalid"), true);
+      await assert.rejects(() => handle.whenReady(), /slipway_logging_config_invalid/u);
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("recreates the logger after refreshed logging config changes", async () => {
+    const firstDek = generateProofLogEncryptionKey();
+    const secondDek = generateProofLogEncryptionKey();
+    const env: Record<string, string | undefined> = {
+      BLACKBOX_LOG_CONFIG: JSON.stringify({
+        factoryToken: "bbx_sf_first_secret",
+        baseUrl: "https://logging.slipway.proof.computer",
+        dek: firstDek
+      })
+    };
+    const registerPaths: string[] = [];
+    const batches: BlackboxLogBatch[] = [];
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      std: blackboxRuntimeStd(),
+      logging: { mode: "background", spoolMode: "memory" },
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      fetchImpl: (async (url, init) => {
+        const parsed = new URL(String(url));
+        if (parsed.pathname.endsWith("/job-sinks")) {
+          registerPaths.push(parsed.pathname);
+          return jsonResponse({ sinkId: `sink-${registerPaths.length}` });
+        }
+        batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
+        return jsonResponse({ ok: true });
+      }) as typeof fetch
+    });
+    try {
+      await handle.log("first");
+      const firstFingerprint = handle.status().capabilities.logging.fingerprint;
+      env.BLACKBOX_LOG_CONFIG = JSON.stringify({
+        factoryToken: "bbx_sf_second_secret",
+        baseUrl: "https://logging.slipway.proof.computer",
+        dek: secondDek
+      });
+      await handle.refreshNow();
+      await handle.log("second");
+      assert.deepEqual(registerPaths, [
+        "/v1/sink-factories/first/job-sinks",
+        "/v1/sink-factories/second/job-sinks"
+      ]);
+      assert.notEqual(handle.status().capabilities.logging.fingerprint, firstFingerprint);
+      assert.equal(decryptProofLogRecord<Record<string, unknown>>(firstDek, batches[0]!.encrypted[0]!).event, "first");
+      assert.equal(decryptProofLogRecord<Record<string, unknown>>(secondDek, batches[1]!.encrypted[0]!).event, "second");
     } finally {
       handle.stop();
     }
@@ -395,7 +895,12 @@ describe("top-level Slipway runtime bootstrap", () => {
   });
 });
 
-function fakeIdentityProvider(): RuntimeIdentityProvider {
+async function flushAsyncWork(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await Promise.resolve();
+}
+
+function fakeIdentityProvider(payload: LockboxRuntimeJobSecretPlaintextPayload = plaintextPayload()): RuntimeIdentityProvider {
   return {
     async resolveIdentity() {
       return { jobId: "job-1", processorId: "processor-1", responseEncryptionKey: "ab".repeat(33) };
@@ -404,7 +909,21 @@ function fakeIdentityProvider(): RuntimeIdentityProvider {
       return "0x" + "11".repeat(64);
     },
     async decryptGrantPayload() {
-      return Buffer.from(JSON.stringify(plaintextPayload()), "utf8");
+      return Buffer.from(JSON.stringify(payload), "utf8");
+    }
+  };
+}
+
+function blackboxRuntimeStd() {
+  return {
+    job: {
+      getId: () => "777",
+      getPublicKeys: () => ({ ed25519: "a".repeat(64) })
+    },
+    signers: {
+      ed25519: {
+        sign: () => "b".repeat(128)
+      }
     }
   };
 }
@@ -429,7 +948,15 @@ function runtimeEnvResponse(): Record<string, unknown> {
   };
 }
 
-function plaintextPayload(): LockboxRuntimeJobSecretPlaintextPayload {
+function plaintextPayload(secrets: LockboxPlaintextSecret[] = [{
+  secretId: "api-token",
+  versionId: "version-1",
+  target: "env",
+  name: "API_TOKEN",
+  required: true,
+  bundleId: "default",
+  value: "secret"
+}]): LockboxRuntimeJobSecretPlaintextPayload {
   return {
     domain: "proof.lockbox.job-secret-response.v1",
     requestId: "lockbox-request-1",
@@ -441,20 +968,14 @@ function plaintextPayload(): LockboxRuntimeJobSecretPlaintextPayload {
     deploymentId: "42",
     processorId: "processor-1",
     issuedAtMs: 1_000,
-    secrets: [{
-      secretId: "api-token",
-      versionId: "version-1",
-      target: "env",
-      name: "API_TOKEN",
-      required: true,
-      bundleId: "default",
-      value: "secret"
-    }]
+    secrets
   };
 }
 
-function lockboxResponse(request: { requestedSecretIds: string[] }) {
-  const plaintext = plaintextPayload();
+function lockboxResponse(
+  request: { requestedSecretIds: string[] },
+  plaintext: LockboxRuntimeJobSecretPlaintextPayload = plaintextPayload()
+) {
   const plaintextText = JSON.stringify(plaintext);
   const encryptedBase = {
     domain: "proof.lockbox.job-secret-response.encrypted-payload.v1" as const,

@@ -108,17 +108,17 @@ describe("Lockbox runtime secrets", () => {
       payload: parseLockboxPlaintextPayload(plaintextPayload([
         { secretId: "file-config", target: "file", name: "configs/service.json", value: "{\"enabled\":true}" }
       ])),
-      fileBaseDir: "/tmp/slipway-js-lockbox",
+      fileBaseDir: "/tmp/slipway-runtime-lockbox",
       files
     });
-    assert.equal(writes[0]?.path, "/tmp/slipway-js-lockbox/configs/service.json");
+    assert.equal(writes[0]?.path, "/tmp/slipway-runtime-lockbox/configs/service.json");
     assert.equal(writes[0]?.data, "{\"enabled\":true}");
 
     await assert.rejects(() => installLockboxRuntimeSecrets({
       payload: parseLockboxPlaintextPayload(plaintextPayload([
         { secretId: "file-config", target: "file", name: "../escape.txt", value: "secret" }
       ])),
-      fileBaseDir: "/tmp/slipway-js-lockbox",
+      fileBaseDir: "/tmp/slipway-runtime-lockbox",
       files
     }), /escapes/u);
   });

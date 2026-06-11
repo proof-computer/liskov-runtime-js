@@ -12,15 +12,15 @@ interface PackageJson {
 }
 
 describe("public package metadata", () => {
-  it("is ready for the v0.2.0 public GitHub tag install path", async () => {
+  it("is ready for the v0.3.0 Slipway runtime GitHub tag install path", async () => {
     const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as PackageJson;
 
-    assert.equal(packageJson.name, "@proof-computer/slipway-js");
-    assert.equal(packageJson.version, "0.2.0");
+    assert.equal(packageJson.name, "@proof-computer/slipway-runtime");
+    assert.equal(packageJson.version, "0.3.0");
     assert.equal(packageJson.private, false);
     assert.deepEqual(packageJson.repository, {
       type: "git",
-      url: "git+https://github.com/proof-computer/slipway-js.git"
+      url: "git+https://github.com/proof-computer/slipway-runtime-js.git"
     });
     assert.deepEqual(packageJson.files?.sort(), ["README.md", "SECURITY.md", "dist"]);
     assert.equal(packageJson.scripts?.["pack:dry-run"], "npm pack --dry-run --json");

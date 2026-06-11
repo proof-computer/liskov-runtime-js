@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 
 import { DEFAULT_JOB_ID_ENV_NAMES, acurastEd25519PublicKey } from "./acurast.js";
 import { getRuntimeEnvValue, resolveRuntimeStd, type AcurastRuntimeStd } from "./env.js";
+import { resolveSlipwayHome } from "./home.js";
 import { encryptProofLogRecord, type ProofLogEncryptedRecord } from "./proof-log-crypto.js";
 import {
   canonicalJson,
@@ -33,7 +34,6 @@ const SPOOL_STATE_FILE = "state.json";
 const SPOOL_RECORD_FORMAT = "blackbox-spool-record-v1";
 const SPOOL_BATCH_FORMAT = "blackbox-spool-batch-v1";
 const SPOOL_STATE_FORMAT = "blackbox-spool-state-v1";
-const DEFAULT_SPOOL_ROOT = "/tmp/blackbox-spool";
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_BATCH_MAX_RECORDS = 50;
 const DEFAULT_BATCH_MAX_BYTES = 256 * 1024;
@@ -208,7 +208,7 @@ export function createBlackboxRemoteLogger(
   }
   if (!config) return async () => undefined;
 
-  const signer = options.signer ?? maybeAcurastBlackboxRequestSigner();
+  const signer = options.signer ?? maybeAcurastBlackboxRequestSigner(options.std);
   if (!signer) {
     return async (event) => {
       options.onError?.(new Error("Blackbox logging requires the Acurast Ed25519 runtime signer"), event);
@@ -983,7 +983,7 @@ function parseFactoryIdFromToken(token: string): string | undefined {
 
 function defaultBlackboxSpoolDir(seed: string): string {
   const segment = seed.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 96) || "sink";
-  return `${DEFAULT_SPOOL_ROOT}/${segment}`;
+  return `${resolveSlipwayHome()}/logging/spool/${segment}`;
 }
 
 function contextField(value: unknown): string | undefined {

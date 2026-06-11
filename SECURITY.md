@@ -1,6 +1,7 @@
 # Security Checklist
 
-Use this checklist before cutting a public `@proof-computer/slipway-js` tag.
+Use this checklist before cutting a public
+`@proof-computer/slipway-runtime` tag.
 
 ## Runtime Authority
 
@@ -22,10 +23,13 @@ Use this checklist before cutting a public `@proof-computer/slipway-js` tag.
 - Lockbox plaintext payload fields must match the signed request and response.
 - File-target secret writes must stay under the configured base directory and
   use mode `0600`.
+- Runtime and CLI state must live under `SLIPWAY_HOME`, defaulting to
+  `~/.slipway` when a home directory is available. Blackbox/Lockbox-specific
+  home directories must not be promoted as the user-facing model.
 
 ## Transport
 
-- Slipway, Lockbox, and Blackbox runtime URLs must use HTTPS by default.
+- Slipway, secrets, and logging runtime URLs must use HTTPS by default.
 - HTTP is allowed only for localhost/test hosts or explicit insecure local
   override env.
 - Diagnostic POSTs must be bounded and best-effort; failed diagnostic delivery
@@ -39,12 +43,12 @@ Use this checklist before cutting a public `@proof-computer/slipway-js` tag.
   private keys, signatures, passwords, or authorization headers.
 - `runtime.start` must not expose compact bootstrap payloads or plaintext env
   values.
-- Blackbox batches must contain encrypted log records only.
+- Slipway logging batches must contain encrypted log records only.
 
 ## Package Artifact
 
-- `package.json` must be public-ready: `private: false`, version `0.1.1`, and
-  repository metadata pointing at `proof-computer/slipway-js`.
+- `package.json` must be public-ready: `private: false`, version `0.3.0`, and
+  repository metadata pointing at `proof-computer/slipway-runtime-js`.
 - The package `files` allowlist must include only `dist`, `README.md`, and
   `SECURITY.md`.
 - `npm pack --dry-run --json` must show no source files, tests, local env,

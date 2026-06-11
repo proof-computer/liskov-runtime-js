@@ -1,0 +1,15 @@
+{
+  "name": "@proof-computer/slipway-runtime-example-acurast-env-vars",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@proof-computer/slipway-runtime": "github:proof-computer/slipway-runtime-js#v0.3.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

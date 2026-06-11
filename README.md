@@ -1,11 +1,20 @@
-# @proof-computer/slipway-js
+# @proof-computer/slipway-runtime
 
 Job-side TypeScript runtime SDK for PROOF Applications that run on Acurast and
 are bootstrapped by Slipway.
 
-`slipway-js` is not a Slipway server SDK, control-plane client, deployment
-tool, or wallet/executor library. It is only the small runtime helper that a
-job imports before application code starts.
+This package is the code that a job imports before its Application starts. It
+is not a Slipway server SDK, deployment tool, control-plane client, wallet
+library, or executor library. It runs inside the customer job's Acurast
+runtime and provides the default Slipway boot path:
+
+- Acurast environment and `_STD_` lookup.
+- Acurast runtime identity, signing, and decrypt helpers.
+- Slipway runtime-env fetch and refresh.
+- Lockbox-backed runtime secrets.
+- Built-in encrypted Slipway logging.
+- Bounded Slipway runtime diagnostics and health events.
+- Runtime readiness/status and test hooks.
 
 ## Install
 
@@ -14,7 +23,7 @@ The first supported dependency source is the public GitHub release tag:
 ```json
 {
   "dependencies": {
-    "@proof-computer/slipway-js": "github:proof-computer/slipway-js#v0.1.1"
+    "@proof-computer/slipway-runtime": "github:proof-computer/slipway-runtime-js#v0.3.0"
   }
 }
 ```
@@ -22,42 +31,144 @@ The first supported dependency source is the public GitHub release tag:
 npmjs publication is a separate release step and is not required for the
 initial runtime cutover.
 
-## Runtime Model
+The package tarball intentionally contains only `dist`, `README.md`,
+`SECURITY.md`, and package metadata. Example source and tests stay in the
+repository.
 
-Slipway jobs use three channels:
+## Minimal Entrypoint
 
-- Acurast environment carries compact public bootstrap values:
-  `PROOF_SLIPWAY_BOOTSTRAP` and, when secrets are needed,
-  `PROOF_LOCKBOX_BOOTSTRAP`.
-- Slipway serves non-secret runtime configuration through signed
-  `proof.slipway.runtime-env-request.v1` requests to
-  `POST /api/jobs/runtime-env`.
-- Lockbox serves secrets through signed
-  `proof.lockbox.job-secret-request.v1` requests to
-  `POST /api/jobs/secret-requests`, returning payloads encrypted to the
-  Acurast job encryption key.
-
-`bootstrapSlipwayRuntime()` applies Slipway runtime env first, then Lockbox
-secrets. It returns handles for runtime-env refresh and runtime health
-diagnostics.
+Use `bootstrapSlipwayRuntime()` before importing Application code:
 
 ```ts
-import { bootstrapSlipwayRuntime } from "@proof-computer/slipway-js";
+import { bootstrapSlipwayRuntime } from "@proof-computer/slipway-runtime";
 
-const runtime = await bootstrapSlipwayRuntime();
+const runtime = await bootstrapSlipwayRuntime({
+  component: "worker",
+  revision: process.env.APP_REVISION
+});
+
 try {
+  await runtime.log("app.boot");
+  await runtime.whenReady();
   await import("./app.js");
 } finally {
+  await runtime.flush();
   runtime.stop();
 }
 ```
 
-The package is Application-agnostic. It does not import Slipway server code and
-does not assume validator-specific env names.
+`whenReady()` is a fail-fast check, not a long polling loop. It resolves with
+the current status when every required capability is ready, and throws
+`SlipwayRuntimeNotReadyError` with the current status when a required
+capability is pending, failed, or blocked.
 
-## Bootstrap Inputs
+## Runtime Handle
 
-`PROOF_SLIPWAY_BOOTSTRAP` is JSON. Compact keys are preferred on Acurast:
+`bootstrapSlipwayRuntime()` returns:
+
+```ts
+interface BootstrapSlipwayRuntimeHandle {
+  readonly home: string;
+  readonly env: {
+    get(name: string): string | undefined;
+    require(name: string): string;
+  };
+  status(): SlipwayRuntimeStatus;
+  whenReady(): Promise<SlipwayRuntimeStatus>;
+  log(
+    event: string,
+    details?: Record<string, unknown>,
+    options?: { severity?: "debug" | "info" | "warn" | "error"; labels?: Record<string, string> }
+  ): Promise<void>;
+  flush(): Promise<{ ok: boolean; state: string; flushed: number; pending: number; dropped: number; message?: string }>;
+  refreshNow(): Promise<SlipwayRuntimeEnvLoadResult | undefined>;
+  stop(): void;
+}
+```
+
+Additional readback fields are present for diagnostics and tests:
+`runtimeEnv`, `lockbox`, and `runtimeHealth`. Application code should normally
+use `env`, `status`, `whenReady`, `log`, `flush`, `refreshNow`, and `stop`.
+
+`stop()` is synchronous and idempotent for the current handle shape. It cancels
+runtime-env refresh, runtime-health timers, and background secret retries. Call
+`flush()` first when a one-shot job needs to give logging a final chance.
+
+## Bootstrap Options
+
+The top-level options are intentionally small and testable:
+
+```ts
+await bootstrapSlipwayRuntime({
+  appId: "application-id",
+  component: "worker",
+  revision: "git-or-artifact-revision",
+  home: "/runtime/.slipway",
+  secrets: { mode: "required" },
+  logging: { mode: "background", earlyBufferMaxRecords: 100 },
+  runtimeHealth: { intervalMs: 30_000, initialDelayMs: 30_000 },
+  diagnostics: (event) => console.error(JSON.stringify(event))
+});
+```
+
+Common options:
+
+- `appId`, `component`, `revision`: metadata added to status, diagnostics, and
+  logging records where available.
+- `home`: explicit state root. Defaults to `SLIPWAY_HOME`, then
+  `$HOME/.slipway`, then `/tmp/slipway`.
+- `secrets.mode`: `required`, `background`, or `off`.
+- `secrets.retry`: background retry budget. Defaults are
+  `initialDelayMs=0`, `intervalMs=5000`, `maxElapsedMs=60000`, and
+  `maxAttempts=12`.
+- `logging.mode`: `required`, `background`, or `off`. The default is
+  `background`.
+- `logging.earlyBufferMaxRecords`: in-memory log records to keep before
+  logging config is available. Default: `100`.
+- `logging.spoolMode`: `auto`, `disk`, or `memory`.
+- `logging.spoolDir`: override the Blackbox spool directory.
+- `logging.timeoutMs`: network timeout for logging writes.
+- `logging.onError`: observes logging failures without breaking the runtime
+  wrapper.
+- `diagnostics`: local callback for redacted runtime diagnostics.
+- `diagnosticSendTimeoutMs`, `diagnosticRemoteBackoffMs`: bounds for remote
+  runtime-diagnostic delivery.
+- `runtimeHealth`: optional interval/initial-delay/send-timeout overrides for
+  `runtime.health` diagnostics.
+
+Test hooks:
+
+- `env`: process-env replacement.
+- `std`: Acurast `_STD_` replacement.
+- `environment`: Acurast `environment(name)` replacement.
+- `identityProvider`: fake identity/sign/decrypt provider.
+- `fetchImpl`: fake network implementation.
+- `nowMs`, `randomBytes`: deterministic clock and nonce/digest inputs.
+- `setTimeoutImpl`, `clearTimeoutImpl`: deterministic timer harness.
+
+## Environment Lookup
+
+Runtime values are resolved from:
+
+1. The supplied `options.env`, or `process.env`.
+2. Acurast `_STD_.env`.
+3. Acurast `environment(name)`.
+
+Use the runtime accessor after bootstrap because runtime-env and secrets may
+install values during startup:
+
+```ts
+const webhookUrl = runtime.env.require("WEBHOOK_URL");
+const optionalMode = runtime.env.get("FEATURE_MODE") ?? "default";
+```
+
+`require()` throws `Slipway runtime env <NAME> is required` when the value is
+absent.
+
+## Slipway Runtime Env
+
+Slipway jobs receive compact public bootstrap config through
+`PROOF_SLIPWAY_BOOTSTRAP`:
 
 ```json
 {
@@ -77,12 +188,27 @@ Expanded keys such as `slipwayUrl`, `applicationId`, `policyDigest`,
 `deploymentId`, `diagnostics.token`, and `diagnostics.health` are also
 accepted.
 
-`PROOF_LOCKBOX_BOOTSTRAP` is JSON:
+When the bootstrap is present, the runtime signs a
+`proof.slipway.runtime-env-request.v1` request and POSTs it to
+`/api/jobs/runtime-env`. The response must bind the same application id,
+policy digest, deployment id, job id, and processor id. Returned values are
+installed into runtime env before Lockbox secrets are requested.
+
+`refreshNow()` forces an immediate runtime-env refresh when
+`PROOF_SLIPWAY_BOOTSTRAP` exists, then performs one deduped secrets attempt if
+background secrets are still pending, then refreshes logging. The current v0
+periodic runtime-env refresh is internal; Applications should use
+`refreshNow()` when they need an explicit reload.
+
+## Secrets
+
+Lockbox secrets are a built-in Slipway runtime capability. Jobs receive compact
+secret bootstrap config through `PROOF_LOCKBOX_BOOTSTRAP`:
 
 ```json
 {
   "v": 1,
-  "u": "https://lockbox.example",
+  "u": "https://secrets.slipway.proof.computer",
   "a": "application-id",
   "g": "grant-id",
   "p": "64-character-policy-digest",
@@ -91,15 +217,111 @@ accepted.
 }
 ```
 
-Legacy expanded `PROOF_LOCKBOX_*` env values remain supported for older jobs,
-but compact bootstrap is the preferred Acurast shape.
+Legacy expanded `PROOF_LOCKBOX_*` values remain supported for older jobs, but
+compact bootstrap is the preferred Acurast shape.
 
-## Diagnostics
+### Required
 
-Runtime diagnostics are best-effort and bounded. Local diagnostic callbacks and
-remote Slipway diagnostic POSTs use a 1.5 second default timeout. Remote
-diagnostic failures pause further remote diagnostic attempts for 30 seconds so
-startup, runtime-env, and Lockbox flows cannot be blocked by observability.
+Required mode is the default when Lockbox bootstrap exists:
+
+```ts
+const runtime = await bootstrapSlipwayRuntime({
+  secrets: { mode: "required" }
+});
+```
+
+Bootstrap waits for Lockbox, verifies the encrypted payload, installs returned
+env/file secrets, and fails closed if the request is rejected or the payload
+does not verify.
+
+### Background
+
+Background mode is for Applications that can boot in a locked or degraded mode:
+
+```ts
+const runtime = await bootstrapSlipwayRuntime({
+  secrets: {
+    mode: "background",
+    retry: {
+      initialDelayMs: 0,
+      intervalMs: 5_000,
+      maxElapsedMs: 60_000,
+      maxAttempts: 12
+    }
+  }
+});
+```
+
+Bootstrap returns before the first Lockbox request. The secrets capability
+reports `pending`, `degraded`, `failed`, or `ready`, but it is not a readiness
+blocker because it is not required. `refreshNow()` performs one immediate
+attempt while the retry budget is still open. `stop()` cancels scheduled
+background retries.
+
+### Off
+
+Use `secrets: { mode: "off" }` for jobs that intentionally ignore Lockbox
+bootstrap values.
+
+### Installation Rules
+
+Env secrets are installed into runtime env by name. Existing env values are not
+overwritten unless `PROOF_LOCKBOX_OVERWRITE_ENV=true` is set.
+
+File secrets require `PROOF_LOCKBOX_FILE_BASE_DIR` or the compact bootstrap
+file-base field. File targets are written below that directory with mode
+`0600`; path traversal outside the base directory is rejected.
+
+## Logging
+
+Blackbox is presented to Applications as Slipway logging. Application code
+should call `runtime.log()` instead of constructing a Blackbox writer:
+
+```ts
+await runtime.log("worker.tick", { processed: 12 }, {
+  severity: "info",
+  labels: { component: "worker" }
+});
+
+const result = await runtime.flush();
+```
+
+The runtime validates and attaches logging after runtime-env and Lockbox
+installation. If a log is written before logging config is available, the
+runtime keeps it in the early in-memory buffer. When config appears later,
+`refreshNow()` or the next `log()` drains the buffer into encrypted Blackbox
+records.
+
+The default `background` logging mode never blocks readiness. Use
+`logging: { mode: "required" }` only when missing or invalid logging config
+must make the Application non-ready. Use `logging: { mode: "off" }` to drop
+runtime logs intentionally.
+
+Accepted config shapes:
+
+- Factory token: `factoryToken` + `baseUrl` + `dek`. This is the product
+  target. The writer self-registers the job-bound sink on first flush.
+- Pre-bound sink: `sinkId` + `jobId` + `writeUrl` + `dek`. This remains
+  accepted for internal and legacy jobs.
+
+Both shapes can be supplied as `BLACKBOX_LOG_CONFIG` JSON or expanded
+`BLACKBOX_*` env values. Records are encrypted locally before upload and
+posted batches contain no plaintext log messages. Disk spool state defaults to:
+
+```text
+$SLIPWAY_HOME/logging/spool
+```
+
+When disk spool is unavailable in `auto` mode, the writer falls back to memory.
+Unknown config shapes report through diagnostics and `logging.onError`; they do
+not silently degrade to a no-op.
+
+## Diagnostics And Health
+
+Runtime diagnostics are best-effort and bounded. When
+`PROOF_SLIPWAY_BOOTSTRAP` includes a diagnostics token, diagnostics are POSTed
+to `/api/jobs/runtime-diagnostics` as
+`proof.slipway.runtime-diagnostic.v1`.
 
 Useful stages include:
 
@@ -115,43 +337,137 @@ Useful stages include:
 - `lockbox.secret_request.response`
 - `lockbox.secret_request.decrypted`
 - `lockbox.secret_request.installed`
+- `lockbox.secret_request.retry`
+- `slipway.logging.attach`
+- `slipway.logging.write`
+- `slipway.logging.buffer`
 - `runtime.health`
 
-`runtime.start` includes generic runtime capability and bootstrap presence
-attributes. Diagnostics redact string fields that look like tokens, secrets,
-private keys, signatures, passwords, or authorization values; count and
-boolean presence fields are retained.
+Local diagnostic callbacks and remote diagnostic sends use a 1.5 second
+default timeout. Remote diagnostic failures pause further remote diagnostic
+attempts for 30 seconds so startup, runtime-env, and Lockbox flows cannot be
+blocked by observability.
 
-## Blackbox Logging
+Health diagnostics start when Slipway bootstrap includes a diagnostics token.
+Defaults are a 30 second initial delay and 30 second interval. Compact
+bootstrap health fields `x.h.i`, `x.h.d`, and `x.h.to`, or the matching
+expanded fields, override interval, initial delay, and send timeout.
 
-The package exports a legacy-compatible encrypted Blackbox logger for runtime
-logs that arrive through Lockbox as `BLACKBOX_LOG_CONFIG` or the expanded
-`BLACKBOX_*` env set. Records are encrypted locally before upload and posted
-batches contain no plaintext log messages.
+Diagnostics redact string fields that look like tokens, secrets, private keys,
+signatures, passwords, or authorization values. Count and boolean presence
+fields are retained.
+
+## Readiness And Status
+
+Use `status()` for redacted readback:
 
 ```ts
-import { createBlackboxRemoteLogger } from "@proof-computer/slipway-js";
+const status = runtime.status();
 
-const log = createBlackboxRemoteLogger();
-await log("runtime.ready", { revision: "runtime-revision-1" });
+if (!status.ready) {
+  console.error(status.blockers);
+}
 ```
 
-The logger signs batch writes with the Acurast Ed25519 runtime signer.
+Status shape:
 
-Two `BLACKBOX_LOG_CONFIG` shapes are accepted:
+```ts
+interface SlipwayRuntimeStatus {
+  ok: boolean;
+  ready: boolean;
+  home: string;
+  applicationId?: string;
+  deploymentId?: string;
+  revision?: string;
+  blockers: Array<{ capability: string; code: string; message: string }>;
+  capabilities: {
+    runtimeEnv: CapabilityStatus;
+    secrets: CapabilityStatus;
+    logging: CapabilityStatus;
+    diagnostics: CapabilityStatus;
+    switchboard: CapabilityStatus;
+  };
+}
+```
 
-- Pre-bound sink: `sinkId` + `jobId` + `writeUrl` + `dek`.
-- Factory token: `factoryToken` + `baseUrl` + `dek`. The writer self-registers
-  its job-bound sink on the first flush (resolving the job id from runtime env
-  or `_STD_.job.getId()`), so the config can ship as a plain pre-boot secret
-  and first-boot/`prepare()` failures are captured from the very first write.
+Capability states are `off`, `pending`, `ready`, `degraded`, `failed`, or
+`blocked`. A capability blocks readiness only when `required=true` and
+`state !== "ready"`.
 
-Records are encrypted immediately and spooled locally (disk under `spoolDir`
-when writable, otherwise in memory), then batched and flushed once the sink is
-reachable. Disk spool state persists the resolved sink id and hash-chain
-sequence so a restarted writer continues its chain instead of conflicting. An
-unrecognized config shape reports through `onError` on every write instead of
-degrading into a silent no-op.
+Current v0 behavior:
+
+- `runtimeEnv` is required when `PROOF_SLIPWAY_BOOTSTRAP` is present.
+- `secrets` is required only in required mode.
+- `logging` is required only in required mode.
+- `diagnostics` is non-fatal and reports ready once the local emitter exists.
+- `switchboard` is reported as off by this package; Switchboard readiness lives
+  in `@proof-computer/slipway-switchboard`.
+
+## Acurast Host Allowlisting
+
+When `_STD_.net.addAllowedHostnames()` is available, bootstrap attempts to
+allowlist Slipway, Lockbox, and logging hosts before the first network request.
+Allowlisting failures are ignored so the following fetch still reports the
+real network error through diagnostics.
+
+Application examples that fetch external hosts should still allowlist their
+own app-specific hosts.
+
+## Testing Fakes
+
+The runtime is designed to be tested without live Acurast spend:
+
+```ts
+const env: Record<string, string | undefined> = {
+  PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+    v: 1,
+    u: "https://slipway.test",
+    a: "app",
+    p: "1".repeat(64),
+    d: "42"
+  })
+};
+
+const runtime = await bootstrapSlipwayRuntime({
+  env,
+  std: {
+    net: { addAllowedHostnames: async () => undefined }
+  },
+  identityProvider: fakeIdentityProvider,
+  fetchImpl: fakeFetch,
+  nowMs: () => 1_000,
+  logging: { spoolMode: "memory" },
+  setTimeoutImpl: fakeSetTimeout,
+  clearTimeoutImpl: fakeClearTimeout
+});
+```
+
+Use `logging.spoolMode: "memory"` in deterministic unit tests. Use
+`secrets.mode: "background"` plus fake timers to prove pending/degraded/ready
+state without sleeping. Use the local `diagnostics` callback for redacted event
+assertions.
+
+The repository tests prove runtime-env, required/background/off secrets,
+factory-token logging, early buffer drain, config refresh, diagnostics,
+health, host allowlisting, and source-only Acurast examples without artifact
+pins or live deployment.
+
+## Examples
+
+Source-only example ports live under `examples/`:
+
+- `examples/acurast-env-vars`: reads runtime-env values, posts only a redacted
+  env summary, and writes through `runtime.log()`.
+- `examples/acurast-fetch`: allowlists app fetch hosts, fetches a price
+  payload, posts a webhook payload, and writes a Slipway runtime log.
+
+The Switchboard webserver example lives in
+`public_repos/slipway-switchboard-js/examples/acurast-webserver` because
+Switchboard ingress is optional and stays in a separate adapter package.
+
+These examples are complete for the current no-spend documentation baseline.
+The next package-cleanup boundary is server-side Turn 6 factory-token product
+flow alignment, not more selected Acurast example ports.
 
 ## Security Boundaries
 
@@ -166,6 +482,12 @@ degrading into a silent no-op.
 - Lockbox encrypted payloads must bind payload digest, request/response fields,
   and requested secret ids before installation.
 - File-target secrets are written only under the configured base directory.
+- `@proof-computer/slipway-runtime` runs inside the job TEE. Slipway control
+  plane services, Lockbox, Blackbox, and CLI/server workflows are separate
+  off-TEE systems.
+- This package does not make Switchboard a required dependency. Use
+  `@proof-computer/slipway-switchboard` only for Slipway-managed Switchboard
+  ingress jobs.
 
 See `SECURITY.md` for the release checklist.
 

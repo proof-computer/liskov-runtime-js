@@ -12,7 +12,7 @@ export const DEFAULT_SLIPWAY_RUNTIME_DIAGNOSTIC_SEND_TIMEOUT_MS = 1_500;
 export const DEFAULT_SLIPWAY_RUNTIME_DIAGNOSTIC_REMOTE_BACKOFF_MS = 30_000;
 
 export interface SlipwayRuntimeDiagnostic {
-  phase?: "slipway_runtime_env" | "lockbox_secrets" | "refresh_failed" | "skipped";
+  phase?: "slipway_runtime_env" | "lockbox_secrets" | "slipway_logging" | "refresh_failed" | "skipped";
   stage: string;
   status: "started" | "succeeded" | "failed" | "skipped" | "info";
   sequence: number;
