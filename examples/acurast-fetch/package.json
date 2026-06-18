@@ -1,12 +1,12 @@
 {
-  "name": "@proof-computer/slipway-runtime-example-acurast-fetch",
+  "name": "@proof-computer/liskov-runtime-example-acurast-fetch",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "tsx src/index.ts"
   },
   "dependencies": {
-    "@proof-computer/slipway-runtime": "github:proof-computer/slipway-runtime-js#v0.3.0"
+    "@proof-computer/liskov-runtime": "github:proof-computer/liskov-runtime-js#v0.3.0"
   },
   "devDependencies": {
     "tsx": "^4.20.6",

@@ -1,19 +1,19 @@
-# @proof-computer/slipway-runtime
+# @proof-computer/liskov-runtime
 
 Job-side TypeScript runtime SDK for PROOF Applications that run on Acurast and
-are bootstrapped by Slipway.
+are bootstrapped by Liskov.
 
 This package is the code that a job imports before its Application starts. It
-is not a Slipway server SDK, deployment tool, control-plane client, wallet
+is not a Liskov server SDK, deployment tool, control-plane client, wallet
 library, or executor library. It runs inside the customer job's Acurast
-runtime and provides the default Slipway boot path:
+runtime and provides the default Liskov boot path:
 
 - Acurast environment and `_STD_` lookup.
 - Acurast runtime identity, signing, and decrypt helpers.
-- Slipway runtime-env fetch and refresh.
+- Liskov runtime-env fetch and refresh.
 - Lockbox-backed runtime secrets.
-- Built-in encrypted Slipway logging.
-- Bounded Slipway runtime diagnostics and health events.
+- Built-in encrypted Liskov logging.
+- Bounded Liskov runtime diagnostics and health events.
 - Runtime readiness/status and test hooks.
 
 ## Install
@@ -23,7 +23,7 @@ The first supported dependency source is the public GitHub release tag:
 ```json
 {
   "dependencies": {
-    "@proof-computer/slipway-runtime": "github:proof-computer/slipway-runtime-js#v0.3.0"
+    "@proof-computer/liskov-runtime": "github:proof-computer/liskov-runtime-js#v0.3.0"
   }
 }
 ```
@@ -40,7 +40,7 @@ repository.
 Use `bootstrapSlipwayRuntime()` before importing Application code:
 
 ```ts
-import { bootstrapSlipwayRuntime } from "@proof-computer/slipway-runtime";
+import { bootstrapSlipwayRuntime } from "@proof-computer/liskov-runtime";
 
 const runtime = await bootstrapSlipwayRuntime({
   component: "worker",
@@ -162,12 +162,12 @@ const webhookUrl = runtime.env.require("WEBHOOK_URL");
 const optionalMode = runtime.env.get("FEATURE_MODE") ?? "default";
 ```
 
-`require()` throws `Slipway runtime env <NAME> is required` when the value is
+`require()` throws `Liskov runtime env <NAME> is required` when the value is
 absent.
 
-## Slipway Runtime Env
+## Liskov Runtime Env
 
-Slipway jobs receive compact public bootstrap config through
+Liskov jobs receive compact public bootstrap config through
 `PROOF_SLIPWAY_BOOTSTRAP`:
 
 ```json
@@ -202,7 +202,7 @@ periodic runtime-env refresh is internal; Applications should use
 
 ## Secrets
 
-Lockbox secrets are a built-in Slipway runtime capability. Jobs receive compact
+Lockbox secrets are a built-in Liskov runtime capability. Jobs receive compact
 secret bootstrap config through `PROOF_LOCKBOX_BOOTSTRAP`:
 
 ```json
@@ -274,7 +274,7 @@ file-base field. File targets are written below that directory with mode
 
 ## Logging
 
-Blackbox is presented to Applications as Slipway logging. Application code
+Blackbox is presented to Applications as Liskov logging. Application code
 should call `runtime.log()` instead of constructing a Blackbox writer:
 
 ```ts
@@ -348,7 +348,7 @@ default timeout. Remote diagnostic failures pause further remote diagnostic
 attempts for 30 seconds so startup, runtime-env, and Lockbox flows cannot be
 blocked by observability.
 
-Health diagnostics start when Slipway bootstrap includes a diagnostics token.
+Health diagnostics start when Liskov bootstrap includes a diagnostics token.
 Defaults are a 30 second initial delay and 30 second interval. Compact
 bootstrap health fields `x.h.i`, `x.h.d`, and `x.h.to`, or the matching
 expanded fields, override interval, initial delay, and send timeout.
@@ -406,7 +406,7 @@ Current v0 behavior:
 ## Acurast Host Allowlisting
 
 When `_STD_.net.addAllowedHostnames()` is available, bootstrap attempts to
-allowlist Slipway, Lockbox, and logging hosts before the first network request.
+allowlist Liskov, Lockbox, and logging hosts before the first network request.
 Allowlisting failures are ignored so the following fetch still reports the
 real network error through diagnostics.
 
@@ -459,7 +459,7 @@ Source-only example ports live under `examples/`:
 - `examples/acurast-env-vars`: reads runtime-env values, posts only a redacted
   env summary, and writes through `runtime.log()`.
 - `examples/acurast-fetch`: allowlists app fetch hosts, fetches a price
-  payload, posts a webhook payload, and writes a Slipway runtime log.
+  payload, posts a webhook payload, and writes a Liskov runtime log.
 
 The Switchboard webserver example lives in
 `public_repos/slipway-switchboard-js/examples/acurast-webserver` because
@@ -471,22 +471,22 @@ flow alignment, not more selected Acurast example ports.
 
 ## Security Boundaries
 
-- Do not put Slipway server control tokens in runtime env or diagnostics.
-- Do not put plaintext runtime secrets in Slipway runtime-env.
+- Do not put Liskov server control tokens in runtime env or diagnostics.
+- Do not put plaintext runtime secrets in Liskov runtime-env.
 - Runtime secrets must come from Lockbox and be encrypted to the job response
   encryption key.
-- HTTPS is required for Slipway, Lockbox, and Blackbox URLs outside local/test
+- HTTPS is required for Liskov, Lockbox, and Blackbox URLs outside local/test
   hosts unless an explicit insecure override is supplied.
 - Signed runtime-env and Lockbox requests bind application id, policy digest,
   deployment id, job id, processor id, nonce, and expiry.
 - Lockbox encrypted payloads must bind payload digest, request/response fields,
   and requested secret ids before installation.
 - File-target secrets are written only under the configured base directory.
-- `@proof-computer/slipway-runtime` runs inside the job TEE. Slipway control
+- `@proof-computer/liskov-runtime` runs inside the job TEE. Liskov control
   plane services, Lockbox, Blackbox, and CLI/server workflows are separate
   off-TEE systems.
 - This package does not make Switchboard a required dependency. Use
-  `@proof-computer/slipway-switchboard` only for Slipway-managed Switchboard
+  `@proof-computer/slipway-switchboard` only for Liskov-managed Switchboard
   ingress jobs.
 
 See `SECURITY.md` for the release checklist.

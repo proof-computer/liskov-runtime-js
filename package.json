@@ -1,17 +1,17 @@
 {
-  "name": "@proof-computer/slipway-runtime",
+  "name": "@proof-computer/liskov-runtime",
   "version": "0.3.0",
   "private": false,
-  "description": "Job-side Slipway runtime bootstrap SDK for PROOF Applications on Acurast.",
+  "description": "Job-side Liskov runtime bootstrap SDK for PROOF Applications on Acurast.",
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/proof-computer/slipway-runtime-js.git"
+    "url": "git+https://github.com/proof-computer/liskov-runtime-js.git"
   },
-  "homepage": "https://github.com/proof-computer/slipway-runtime-js#readme",
+  "homepage": "https://github.com/proof-computer/liskov-runtime-js#readme",
   "bugs": {
-    "url": "https://github.com/proof-computer/slipway-runtime-js/issues"
+    "url": "https://github.com/proof-computer/liskov-runtime-js/issues"
   },
   "license": "MIT",
   "engines": {
