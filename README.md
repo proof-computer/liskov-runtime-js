@@ -208,7 +208,7 @@ secret bootstrap config through `PROOF_LOCKBOX_BOOTSTRAP`:
 ```json
 {
   "v": 1,
-  "u": "https://secrets.slipway.proof.computer",
+  "u": "https://secrets.liskov.proof.computer",
   "a": "application-id",
   "g": "grant-id",
   "p": "64-character-policy-digest",
