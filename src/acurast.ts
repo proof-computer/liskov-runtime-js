@@ -13,6 +13,14 @@ import {
   stripHexPrefix
 } from "./shared.js";
 
+export type AcurastHttpPost = (
+  url: string,
+  body: string,
+  headers: Record<string, string>,
+  onSuccess: (response: string, certificate: string) => void,
+  onError: (error: string) => void
+) => void;
+
 export interface RuntimeIdentity {
   jobId: string;
   processorId: string;
@@ -33,6 +41,10 @@ export interface AcurastRuntimeAdapterOptions extends RuntimeEnvLookupOptions {
   jobIdEnvNames?: readonly string[];
   processorIdEnvNames?: readonly string[];
   encryptionKeyEnvNames?: readonly string[];
+}
+
+export interface AcurastHttpPostFetchOptions {
+  httpPOST?: AcurastHttpPost;
 }
 
 export const DEFAULT_JOB_ID_ENV_NAMES = [
@@ -71,6 +83,31 @@ export function createAcurastRuntimeAdapter(options: AcurastRuntimeAdapterOption
   };
 }
 
+export function createAcurastHttpPostFetch(options: AcurastHttpPostFetchOptions = {}): typeof fetch | undefined {
+  const httpPOST = options.httpPOST ?? (globalThis as { httpPOST?: AcurastHttpPost }).httpPOST;
+  if (typeof httpPOST !== "function") return undefined;
+
+  return (async (input, init) => {
+    const request = requestLike(input);
+    const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
+    const url = request?.url ?? String(input);
+    if (method !== "POST") {
+      return fetchResponse("Acurast httpPOST fetch adapter only supports POST requests", 405);
+    }
+    const body = await fetchBody(init?.body ?? request?.body);
+    const headers = fetchHeaders(init?.headers ?? request?.headers);
+    return new Promise<Response>((resolve) => {
+      httpPOST(
+        url,
+        body,
+        headers,
+        (response) => resolve(fetchResponse(response, 200)),
+        (error) => resolve(fetchResponse(error, 599))
+      );
+    });
+  }) as typeof fetch;
+}
+
 export async function resolveAcurastRuntimeIdentityAsync(
   options: AcurastRuntimeAdapterOptions = {},
   resolveOptions: { requireEncryptionKey?: boolean } = {}
@@ -91,6 +128,63 @@ export function resolveAcurastRuntimeIdentity(
     primeAcurastEncryptionKeysBestEffort(std);
   }
   return resolveAcurastRuntimeIdentityFromStd(std, options, resolveOptions);
+}
+
+function requestLike(input: Parameters<typeof fetch>[0]): { url?: string; method?: string; headers?: HeadersInit; body?: BodyInit | null } | undefined {
+  if (typeof Request === "function" && input instanceof Request) {
+    return {
+      url: input.url,
+      method: input.method,
+      headers: input.headers,
+      body: undefined
+    };
+  }
+  if (input && typeof input === "object" && "url" in input) {
+    return input as { url?: string; method?: string; headers?: HeadersInit; body?: BodyInit | null };
+  }
+  return undefined;
+}
+
+async function fetchBody(body: BodyInit | null | undefined): Promise<string> {
+  if (body === undefined || body === null) return "";
+  if (typeof body === "string") return body;
+  if (body instanceof URLSearchParams) return body.toString();
+  if (body instanceof Uint8Array) return Buffer.from(body).toString("utf8");
+  if (typeof ArrayBuffer !== "undefined" && body instanceof ArrayBuffer) return Buffer.from(body).toString("utf8");
+  if (typeof Blob !== "undefined" && body instanceof Blob) return body.text();
+  throw new Error("Acurast httpPOST fetch adapter only supports string-compatible request bodies");
+}
+
+function fetchHeaders(headers: HeadersInit | undefined): Record<string, string> {
+  if (!headers) return {};
+  if (typeof Headers === "function" && headers instanceof Headers) {
+    return Object.fromEntries(headers.entries());
+  }
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(headers.map(([key, value]) => [key, value]));
+  }
+  return Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, String(value)]));
+}
+
+function fetchResponse(body: string, status: number): Response {
+  if (typeof Response === "function") {
+    return new Response(body, {
+      status,
+      headers: { "content-type": "application/json" }
+    });
+  }
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status >= 200 && status < 300 ? "OK" : "Acurast httpPOST error",
+    headers: new Map([["content-type", "application/json"]]),
+    async text() {
+      return body;
+    },
+    async json() {
+      return JSON.parse(body) as unknown;
+    }
+  } as unknown as Response;
 }
 
 function resolveAcurastRuntimeIdentityFromStd(

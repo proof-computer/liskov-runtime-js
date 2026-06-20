@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   createAcurastRuntimeAdapter,
+  createAcurastHttpPostFetch,
   getRuntimeEnvValue,
   type AcurastRuntimeStd
 } from "../src/index.js";
@@ -84,6 +85,36 @@ describe("runtime env lookup and Acurast adapter", () => {
       processorId: "processor-1",
       responseEncryptionKey: "02".repeat(33)
     });
+  });
+
+  it("adapts Acurast httpPOST to the fetch surface used by runtime bootstrap", async () => {
+    const calls: Array<{ url: string; body: string; headers: Record<string, string> }> = [];
+    const fetchImpl = createAcurastHttpPostFetch({
+      httpPOST(url, body, headers, onSuccess) {
+        calls.push({ url, body, headers });
+        onSuccess(JSON.stringify({ ok: true }), "certificate");
+      }
+    });
+    assert.equal(typeof fetchImpl, "function");
+
+    const response = await fetchImpl!("https://liskov.test/api/jobs/runtime-env", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ request: true })
+    });
+
+    assert.equal(response.ok, true);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true });
+    assert.deepEqual(calls, [{
+      url: "https://liskov.test/api/jobs/runtime-env",
+      body: JSON.stringify({ request: true }),
+      headers: { "content-type": "application/json" }
+    }]);
+  });
+
+  it("returns undefined when Acurast httpPOST is unavailable", () => {
+    assert.equal(createAcurastHttpPostFetch(), undefined);
   });
 
   it("ignores legacy JOB_ID and serializes object-shaped Acurast job ids", async () => {
