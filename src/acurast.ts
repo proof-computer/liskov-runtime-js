@@ -158,12 +158,38 @@ async function fetchBody(body: BodyInit | null | undefined): Promise<string> {
 function fetchHeaders(headers: HeadersInit | undefined): Record<string, string> {
   if (!headers) return {};
   if (typeof Headers === "function" && headers instanceof Headers) {
-    return Object.fromEntries(headers.entries());
+    return acurastHttpPostHeaders(Object.fromEntries(headers.entries()));
   }
   if (Array.isArray(headers)) {
-    return Object.fromEntries(headers.map(([key, value]) => [key, value]));
+    return acurastHttpPostHeaders(Object.fromEntries(headers.map(([key, value]) => [key, value])));
   }
-  return Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, String(value)]));
+  return acurastHttpPostHeaders(Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, String(value)])));
+}
+
+function acurastHttpPostHeaders(headers: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).map(([key, value]) => [canonicalAcurastHttpPostHeaderName(key), value])
+  );
+}
+
+function canonicalAcurastHttpPostHeaderName(key: string): string {
+  const lower = key.toLowerCase();
+  switch (lower) {
+    case "accept":
+      return "Accept";
+    case "authorization":
+      return "Authorization";
+    case "content-type":
+      return "Content-Type";
+    case "x-publickey":
+      return "X-PublicKey";
+    case "x-signature":
+      return "X-Signature";
+    case "x-timestamp":
+      return "X-Timestamp";
+    default:
+      return key;
+  }
 }
 
 function fetchResponse(body: string, status: number): Response {

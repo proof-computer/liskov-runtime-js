@@ -109,7 +109,42 @@ describe("runtime env lookup and Acurast adapter", () => {
     assert.deepEqual(calls, [{
       url: "https://liskov.test/api/jobs/runtime-env",
       body: JSON.stringify({ request: true }),
-      headers: { "content-type": "application/json" }
+      headers: { "Content-Type": "application/json" }
+    }]);
+  });
+
+  it("canonicalizes fetch header casing before calling Acurast httpPOST", async () => {
+    const calls: Array<{ headers: Record<string, string> }> = [];
+    const fetchImpl = createAcurastHttpPostFetch({
+      httpPOST(_url, _body, headers, onSuccess) {
+        calls.push({ headers });
+        onSuccess(JSON.stringify({ ok: true }), "certificate");
+      }
+    });
+
+    const response = await fetchImpl!("https://liskov.test/api/jobs/runtime-diagnostics", {
+      method: "POST",
+      headers: new Headers({
+        accept: "application/json",
+        authorization: "Bearer token",
+        "content-type": "application/json",
+        "x-publickey": "public-key",
+        "x-signature": "signature",
+        "x-timestamp": "timestamp"
+      }),
+      body: "{}"
+    });
+
+    assert.equal(response.ok, true);
+    assert.deepEqual(calls, [{
+      headers: {
+        Accept: "application/json",
+        Authorization: "Bearer token",
+        "Content-Type": "application/json",
+        "X-PublicKey": "public-key",
+        "X-Signature": "signature",
+        "X-Timestamp": "timestamp"
+      }
     }]);
   });
 
