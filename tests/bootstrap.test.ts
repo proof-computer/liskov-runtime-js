@@ -4,8 +4,10 @@ import { describe, it } from "node:test";
 
 import {
   bootstrapSlipwayRuntime,
+  DEFAULT_LISKOV_SECRETS_URL,
   decryptProofLogRecord,
   generateProofLogEncryptionKey,
+  liskovSignedBootstrapUrls,
   lockboxEncryptedPayloadDigest,
   type BlackboxLogBatch,
   type LockboxRuntimeJobSecretPlaintextPayload,
@@ -108,6 +110,126 @@ describe("top-level Slipway runtime bootstrap", () => {
         "fetch:/api/jobs/runtime-env",
         "fetch:/api/jobs/secret-requests"
       ]);
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("defaults signed secret bootstrap to the Liskov secrets host", () => {
+    assert.equal(DEFAULT_LISKOV_SECRETS_URL, "https://secrets.liskov.proof.computer");
+    assert.equal(liskovSignedBootstrapUrls({ env: {} }).secretsUrl, "https://secrets.liskov.proof.computer");
+  });
+
+  it("discovers runtime env and secrets with signed Liskov bootstrap when env bootstrap is absent", async () => {
+    const env: Record<string, string | undefined> = {};
+    const order: string[] = [];
+    const signedMessages: string[] = [];
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      bootstrap: {
+        coreUrl: "https://liskov.test",
+        secretsUrl: "https://secrets.liskov.test"
+      },
+      identityProvider: fakeIdentityProvider(plaintextPayload(), { signedMessages }),
+      nowMs: () => 1_000,
+      randomBytes: (size) => new Uint8Array(size).fill(7),
+      fetchImpl: (async (url, init) => {
+        const parsed = new URL(String(url));
+        order.push(parsed.pathname);
+        const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
+          assert.equal(request.domain, "proof.liskov.runtime-bootstrap-request.v1");
+          assert.equal(request.applicationId, undefined);
+          assert.equal(request.policyDigest, undefined);
+          return jsonResponse(liskovRuntimeBootstrapResponse());
+        }
+        if (parsed.pathname === "/api/jobs/runtime-env") {
+          assert.equal(request.applicationId, "generic-worker");
+          assert.equal(request.policyDigest, "1".repeat(64));
+          return jsonResponse(runtimeEnvResponse());
+        }
+        if (parsed.pathname === "/api/jobs/secret-bootstrap") {
+          assert.equal(request.domain, "proof.liskov.secret-bootstrap-request.v1");
+          assert.equal(request.grantId, undefined);
+          assert.equal(request.responseEncryptionKey, "ab".repeat(33));
+          return jsonResponse(liskovSecretBootstrapResponse());
+        }
+        if (parsed.pathname === "/api/jobs/secret-requests") {
+          assert.equal(request.grantId, "grant-1");
+          return jsonResponse(lockboxResponse(request as { requestedSecretIds: string[] }));
+        }
+        throw new Error(`unexpected path ${parsed.pathname}`);
+      }) as typeof fetch
+    });
+    try {
+      assert.deepEqual(order, [
+        "/api/jobs/runtime-bootstrap",
+        "/api/jobs/secret-bootstrap",
+        "/api/jobs/runtime-env",
+        "/api/jobs/secret-requests"
+      ]);
+      assert.equal(env.RUNTIME_VALUE, "ok");
+      assert.equal(env.API_TOKEN, "secret");
+      assert.equal(handle.runtimeEnv?.response.revision, "runtime-revision-1");
+      assert.equal(handle.lockbox?.installed.env[0]?.name, "API_TOKEN");
+      assert.equal(handle.status().capabilities.runtimeEnv.state, "ready");
+      assert.equal(handle.status().capabilities.secrets.state, "ready");
+      const runtimeBootstrapMessage = JSON.parse(signedMessages[0]!) as Record<string, unknown>;
+      const secretBootstrapMessage = JSON.parse(signedMessages[1]!) as Record<string, unknown>;
+      assert.equal(runtimeBootstrapMessage.domain, "proof.liskov.runtime-bootstrap-request.v1");
+      assert.equal(runtimeBootstrapMessage.applicationId, undefined);
+      assert.equal(secretBootstrapMessage.domain, "proof.liskov.secret-bootstrap-request.v1");
+      assert.equal(secretBootstrapMessage.responseEncryptionKey, "ab".repeat(33));
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("retries transient signed bootstrap misses while Liskov catches up", async () => {
+    const env: Record<string, string | undefined> = {};
+    const sleeps: number[] = [];
+    let runtimeBootstrapAttempts = 0;
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      bootstrap: {
+        coreUrl: "https://liskov.test",
+        secretsUrl: "https://secrets.liskov.test",
+        retry: { initialDelayMs: 5, intervalMs: 5, maxElapsedMs: 100, maxAttempts: 3 }
+      },
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      setTimeoutImpl: (((callback: () => void, delayMs?: number) => {
+        sleeps.push(delayMs ?? 0);
+        callback();
+        return { unref() {} };
+      }) as unknown) as typeof setTimeout,
+      fetchImpl: (async (url, init) => {
+        const parsed = new URL(String(url));
+        if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
+          runtimeBootstrapAttempts += 1;
+          if (runtimeBootstrapAttempts === 1) {
+            return new Response(JSON.stringify({
+              ok: false,
+              error: "runtime_bootstrap_job_not_found",
+              reason: "not observed yet"
+            }), {
+              status: 404,
+              headers: { "content-type": "application/json" }
+            });
+          }
+          return jsonResponse(liskovRuntimeBootstrapResponse());
+        }
+        if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse());
+        if (parsed.pathname === "/api/jobs/secret-bootstrap") return jsonResponse(liskovSecretBootstrapResponse());
+        const request = JSON.parse(String(init?.body)) as { requestedSecretIds: string[] };
+        return jsonResponse(lockboxResponse(request));
+      }) as typeof fetch
+    });
+    try {
+      assert.equal(runtimeBootstrapAttempts, 2);
+      assert.equal(sleeps[0], 5);
+      assert.equal(handle.status().ready, true);
+      assert.equal(env.API_TOKEN, "secret");
     } finally {
       handle.stop();
     }
@@ -421,6 +543,7 @@ describe("top-level Slipway runtime bootstrap", () => {
     const handle = await bootstrapSlipwayRuntime({
       env,
       std: blackboxRuntimeStd(),
+      bootstrap: { mode: "off" },
       logging: { mode: "background", spoolMode: "memory" },
       identityProvider: fakeIdentityProvider(),
       nowMs: () => 1_000,
@@ -528,6 +651,7 @@ describe("top-level Slipway runtime bootstrap", () => {
     const handle = await bootstrapSlipwayRuntime({
       env,
       std: blackboxRuntimeStd(),
+      bootstrap: { mode: "off" },
       logging: { mode: "background", spoolMode: "memory", earlyBufferMaxRecords: 2 },
       identityProvider: fakeIdentityProvider(),
       nowMs: () => 1_000,
@@ -566,6 +690,7 @@ describe("top-level Slipway runtime bootstrap", () => {
     const handle = await bootstrapSlipwayRuntime({
       env,
       std: blackboxRuntimeStd(),
+      bootstrap: { mode: "off" },
       logging: { mode: "required", spoolMode: "memory" },
       identityProvider: fakeIdentityProvider(),
       nowMs: () => 1_000,
@@ -601,6 +726,7 @@ describe("top-level Slipway runtime bootstrap", () => {
     const handle = await bootstrapSlipwayRuntime({
       env,
       std: blackboxRuntimeStd(),
+      bootstrap: { mode: "off" },
       logging: { mode: "background", spoolMode: "memory" },
       identityProvider: fakeIdentityProvider(),
       nowMs: () => 1_000,
@@ -900,12 +1026,16 @@ async function flushAsyncWork(): Promise<void> {
   await Promise.resolve();
 }
 
-function fakeIdentityProvider(payload: LockboxRuntimeJobSecretPlaintextPayload = plaintextPayload()): RuntimeIdentityProvider {
+function fakeIdentityProvider(
+  payload: LockboxRuntimeJobSecretPlaintextPayload = plaintextPayload(),
+  options: { signedMessages?: string[] } = {}
+): RuntimeIdentityProvider {
   return {
     async resolveIdentity() {
       return { jobId: "job-1", processorId: "processor-1", responseEncryptionKey: "ab".repeat(33) };
     },
-    async sign() {
+    async sign(message) {
+      options.signedMessages?.push(Buffer.from(message).toString("utf8"));
       return "0x" + "11".repeat(64);
     },
     async decryptGrantPayload() {
@@ -945,6 +1075,43 @@ function runtimeEnvResponse(): Record<string, unknown> {
     values: {
       RUNTIME_VALUE: "ok"
     }
+  };
+}
+
+function liskovRuntimeBootstrapResponse(): Record<string, unknown> {
+  return {
+    ok: true,
+    domain: "proof.liskov.runtime-bootstrap-response.v1",
+    applicationId: "generic-worker",
+    policyDigest: "1".repeat(64),
+    deploymentId: "42",
+    jobId: "job-1",
+    processorId: "processor-1",
+    slipwayUrl: "https://slipway.test",
+    runtimeEnv: {
+      enabled: true,
+      url: "https://slipway.test"
+    },
+    secrets: {
+      required: true,
+      url: "https://secrets.liskov.test"
+    }
+  };
+}
+
+function liskovSecretBootstrapResponse(): Record<string, unknown> {
+  return {
+    ok: true,
+    domain: "proof.liskov.secret-bootstrap-response.v1",
+    lockboxUrl: "https://lockbox.test",
+    applicationId: "generic-worker",
+    grantId: "grant-1",
+    policyDigest: "1".repeat(64),
+    deploymentId: "42",
+    jobId: "job-1",
+    processorId: "processor-1",
+    requestedSecretIds: ["api-token"],
+    fileBaseDir: "./.slipway-lockbox"
   };
 }
 

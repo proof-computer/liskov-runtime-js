@@ -14,6 +14,14 @@ import {
   type BlackboxLogRecord
 } from "./blackbox-logger.js";
 import {
+  isLiskovSignedBootstrapUnavailableError,
+  liskovSignedBootstrapUrls,
+  loadLiskovRuntimeBootstrap,
+  loadLiskovSecretBootstrap,
+  type LiskovSignedBootstrapRetryOptions,
+  type LiskovSignedBootstrapMode
+} from "./bootstrap.js";
+import {
   createSlipwayRuntimeDiagnosticEmitter,
   startSlipwayRuntimeHealth,
   type SlipwayRuntimeDiagnostic,
@@ -39,6 +47,7 @@ import { safeErrorMessage, type RuntimeRandomBytes } from "./shared.js";
 
 export * from "./acurast.js";
 export * from "./blackbox-logger.js";
+export * from "./bootstrap.js";
 export * from "./diagnostics.js";
 export * from "./env.js";
 export * from "./home.js";
@@ -127,6 +136,14 @@ export interface BootstrapSlipwayRuntimeOptions {
     mode?: SlipwayRuntimeSecretMode;
     retry?: SlipwayRuntimeSecretRetryOptions;
   };
+  bootstrap?: {
+    mode?: LiskovSignedBootstrapMode;
+    coreUrl?: string;
+    secretsUrl?: string;
+    allowInsecureHttp?: boolean;
+    requestTtlMs?: number;
+    retry?: LiskovSignedBootstrapRetryOptions;
+  };
   logging?: {
     mode?: SlipwayRuntimeLoggingMode;
     earlyBufferMaxRecords?: number;
@@ -168,6 +185,85 @@ export interface BootstrapSlipwayRuntimeHandle {
   runtimeHealth?: SlipwayRuntimeHealthHandle;
 }
 
+async function resolveSignedRuntimeBootstrap(input: {
+  mode: LiskovSignedBootstrapMode;
+  env: Record<string, string | undefined>;
+  std?: AcurastRuntimeStd;
+  environment?: (name: string) => unknown;
+  identityProvider: RuntimeIdentityProvider;
+  fetchImpl?: typeof fetch;
+  nowMs?: () => number;
+  randomBytes?: RuntimeRandomBytes;
+  setTimeoutImpl?: typeof setTimeout;
+  bootstrap?: BootstrapSlipwayRuntimeOptions["bootstrap"];
+  requestedSecretsMode?: SlipwayRuntimeSecretMode;
+  hasLockboxConfig: boolean;
+  setSlipwayConfig(config: NonNullable<ReturnType<typeof readSlipwayRuntimeEnvConfig>>): void;
+  setLockboxConfig(config: NonNullable<ReturnType<typeof readLockboxRuntimeConfig>>): void;
+}): Promise<void> {
+  const signedOptions = {
+    env: input.env,
+    std: input.std,
+    environment: input.environment,
+    identityProvider: input.identityProvider,
+    fetchImpl: input.fetchImpl,
+    nowMs: input.nowMs,
+    randomBytes: input.randomBytes,
+    setTimeoutImpl: input.setTimeoutImpl,
+    coreUrl: input.bootstrap?.coreUrl,
+    secretsUrl: input.bootstrap?.secretsUrl,
+    allowInsecureHttp: input.bootstrap?.allowInsecureHttp,
+    requestTtlMs: input.bootstrap?.requestTtlMs,
+    retry: input.bootstrap?.retry
+  };
+  const urls = liskovSignedBootstrapUrls(signedOptions);
+  await allowBootstrapHostnames(input.std, [urlHostOrNull(urls.coreUrl), urlHostOrNull(urls.secretsUrl)]);
+  const runtimeBootstrap = await loadSignedRuntimeBootstrapOrSkip(input.mode, signedOptions);
+  if (!runtimeBootstrap) return;
+  if (runtimeBootstrap.runtimeEnvConfig !== undefined) {
+    input.setSlipwayConfig(runtimeBootstrap.runtimeEnvConfig);
+  }
+  if (input.hasLockboxConfig) return;
+  if (input.requestedSecretsMode === "off") return;
+  const shouldDiscoverSecrets =
+    runtimeBootstrap.secretsRequired ||
+    input.requestedSecretsMode === "required" ||
+    input.requestedSecretsMode === "background";
+  if (!shouldDiscoverSecrets) return;
+  await allowBootstrapHostnames(input.std, [urlHostOrNull(runtimeBootstrap.secretsUrl)]);
+  const secretBootstrap = await loadSignedSecretBootstrapOrSkip(
+    input.mode,
+    { ...signedOptions, secretsUrl: runtimeBootstrap.secretsUrl },
+    runtimeBootstrap.secretsRequired
+  );
+  if (secretBootstrap !== undefined) input.setLockboxConfig(secretBootstrap.lockboxConfig);
+}
+
+async function loadSignedRuntimeBootstrapOrSkip(
+  mode: LiskovSignedBootstrapMode,
+  options: Parameters<typeof loadLiskovRuntimeBootstrap>[0]
+): Promise<Awaited<ReturnType<typeof loadLiskovRuntimeBootstrap>> | undefined> {
+  try {
+    return await loadLiskovRuntimeBootstrap(options);
+  } catch (error) {
+    if (mode === "auto" && isLiskovSignedBootstrapUnavailableError(error)) return undefined;
+    throw error;
+  }
+}
+
+async function loadSignedSecretBootstrapOrSkip(
+  mode: LiskovSignedBootstrapMode,
+  options: Parameters<typeof loadLiskovSecretBootstrap>[0],
+  required: boolean
+): Promise<Awaited<ReturnType<typeof loadLiskovSecretBootstrap>> | undefined> {
+  try {
+    return await loadLiskovSecretBootstrap(options);
+  } catch (error) {
+    if (!required && mode === "auto" && isLiskovSignedBootstrapUnavailableError(error)) return undefined;
+    throw error;
+  }
+}
+
 export async function bootstrapSlipwayRuntime(
   options: BootstrapSlipwayRuntimeOptions = {}
 ): Promise<BootstrapSlipwayRuntimeHandle> {
@@ -176,9 +272,38 @@ export async function bootstrapSlipwayRuntime(
   const std = resolveRuntimeStd(options.std);
   const lookup = { env, std, environment: options.environment };
   const identityProvider = options.identityProvider ?? createAcurastRuntimeAdapter(lookup);
-  const slipwayConfig = readSlipwayRuntimeEnvConfig(lookup);
-  const lockboxConfig = readLockboxRuntimeConfig(lookup);
+  let slipwayConfig = readSlipwayRuntimeEnvConfig(lookup);
+  let lockboxConfig = readLockboxRuntimeConfig(lookup);
   const startedAtMs = options.nowMs?.() ?? Date.now();
+  const signedBootstrapMode = options.bootstrap?.mode ?? "auto";
+  const shouldResolveSignedBootstrap =
+    signedBootstrapMode !== "off" && (
+      signedBootstrapMode === "signed" ||
+      (slipwayConfig === undefined && lockboxConfig === undefined) ||
+      (lockboxConfig === undefined && options.secrets?.mode !== undefined && options.secrets.mode !== "off")
+    );
+  if (shouldResolveSignedBootstrap) {
+    await resolveSignedRuntimeBootstrap({
+      mode: signedBootstrapMode,
+      env,
+      std,
+      environment: options.environment,
+      identityProvider,
+      fetchImpl: options.fetchImpl,
+      nowMs: options.nowMs,
+      randomBytes: options.randomBytes,
+      setTimeoutImpl: options.setTimeoutImpl,
+      bootstrap: options.bootstrap,
+      requestedSecretsMode: options.secrets?.mode,
+      hasLockboxConfig: lockboxConfig !== undefined,
+      setSlipwayConfig: (config) => {
+        slipwayConfig ??= config;
+      },
+      setLockboxConfig: (config) => {
+        lockboxConfig ??= config;
+      }
+    });
+  }
   const secretsMode = options.secrets?.mode ?? (lockboxConfig === undefined ? "off" : "required");
   const loggingMode = options.logging?.mode ?? "background";
   await allowBootstrapHostnames(std, [
@@ -378,6 +503,10 @@ export async function bootstrapSlipwayRuntime(
     }
   };
 }
+
+export const bootstrapLiskovRuntime = bootstrapSlipwayRuntime;
+export type BootstrapLiskovRuntimeOptions = BootstrapSlipwayRuntimeOptions;
+export type BootstrapLiskovRuntimeHandle = BootstrapSlipwayRuntimeHandle;
 
 type SlipwayRuntimeLogWriter = (event: string, details?: Record<string, unknown>) => Promise<void>;
 
