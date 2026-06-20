@@ -47,7 +47,7 @@ Use this checklist before cutting a public
 
 ## Package Artifact
 
-- `package.json` must be public-ready: `private: false`, version `0.3.0`, and
+- `package.json` must be public-ready: `private: false`, version `0.3.3`, and
   repository metadata pointing at `proof-computer/slipway-runtime-js`.
 - The package `files` allowlist must include only `dist`, `README.md`, and
   `SECURITY.md`.
