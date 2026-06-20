@@ -7,12 +7,11 @@ import {
   decryptProofLogRecord,
   generateProofLogEncryptionKey,
   type BlackboxLogBatch,
+  type BootstrapSlipwayRuntimeOptions,
   type RuntimeIdentityProvider
 } from "../src/index.js";
 import { runAcurastEnvVarsExample } from "../examples/acurast-env-vars/src/index.js";
 import { runAcurastFetchExample } from "../examples/acurast-fetch/src/index.js";
-import { runAcurastWebserverExample } from "../../../public_repos/slipway-switchboard-js/examples/acurast-webserver/src/index.js";
-import { attachSlipwaySwitchboard } from "../../../public_repos/slipway-switchboard-js/src/index.js";
 
 const JOB_SIGNER_PRIVATE_KEY = "0x0000000000000000000000000000000000000000000000000000000000000009";
 const REGISTRY_ADDRESS = "0x65d6B76BeC50F46D198fFa3598E381a298025Da0";
@@ -125,7 +124,13 @@ describe("Slipway-backed Acurast examples", () => {
     assert.equal(decryptedEvents(batches, dek).includes("example.fetch.posted"), true);
   });
 
-  it("runs the webserver example with real Slipway runtime, adapter prepare, and ready-after-listen ordering", async () => {
+  it("runs the webserver example with real Slipway runtime, adapter prepare, and ready-after-listen ordering", async (t) => {
+    const switchboardExample = await loadOptionalSwitchboardWebserverExample();
+    if (!switchboardExample) {
+      t.skip("slipway-switchboard-js sibling checkout is not present");
+      return;
+    }
+
     const factoryToken = "bbx_sf_webserver_secret";
     const dek = generateProofLogEncryptionKey();
     const env: Record<string, string | undefined> = {
@@ -155,9 +160,9 @@ describe("Slipway-backed Acurast examples", () => {
       relayCalls
     });
 
-    const handle = await runAcurastWebserverExample({
+    const handle = await switchboardExample.runAcurastWebserverExample({
       bootstrapSlipwayRuntime,
-      attachSlipwaySwitchboard,
+      attachSlipwaySwitchboard: switchboardExample.attachSlipwaySwitchboard,
       runtimeOptions: {
         env,
         std: fakeStd(allowed),
@@ -197,6 +202,64 @@ describe("Slipway-backed Acurast examples", () => {
     }
   });
 });
+
+type SwitchboardWebserverExampleHandle = {
+  readonly port: number;
+  stop(): void | Promise<void>;
+};
+
+type RunAcurastWebserverExample = (options: {
+  bootstrapSlipwayRuntime: typeof bootstrapSlipwayRuntime;
+  attachSlipwaySwitchboard: unknown;
+  runtimeOptions: BootstrapSlipwayRuntimeOptions;
+  switchboardOptions: {
+    baseEnv: Record<string, string | undefined>;
+  };
+  fetchImpl: typeof fetch;
+  host: string;
+  stdout: (line: string) => void;
+}) => Promise<SwitchboardWebserverExampleHandle>;
+
+type SwitchboardWebserverExampleModules = {
+  runAcurastWebserverExample: RunAcurastWebserverExample;
+  attachSlipwaySwitchboard: unknown;
+};
+
+async function loadOptionalSwitchboardWebserverExample(): Promise<SwitchboardWebserverExampleModules | undefined> {
+  try {
+    const [exampleModule, adapterModule] = await Promise.all([
+      import(optionalSiblingModule("examples/acurast-webserver/src/index.js")),
+      import(optionalSiblingModule("src/index.js"))
+    ]);
+    const runAcurastWebserverExample = (exampleModule as {
+      runAcurastWebserverExample?: unknown;
+    }).runAcurastWebserverExample;
+    const attachSlipwaySwitchboard = (adapterModule as {
+      attachSlipwaySwitchboard?: unknown;
+    }).attachSlipwaySwitchboard;
+    if (typeof runAcurastWebserverExample !== "function" || typeof attachSlipwaySwitchboard !== "function") {
+      throw new Error("slipway-switchboard-js webserver example exports were not found");
+    }
+    return {
+      runAcurastWebserverExample: runAcurastWebserverExample as RunAcurastWebserverExample,
+      attachSlipwaySwitchboard
+    };
+  } catch (error) {
+    if (isMissingSwitchboardSibling(error)) return undefined;
+    throw error;
+  }
+}
+
+function optionalSiblingModule(path: string): string {
+  return ["../../../public_repos/slipway-switchboard-js/", path].join("");
+}
+
+function isMissingSwitchboardSibling(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? (error as { code?: unknown }).code : undefined;
+  const message = error instanceof Error ? error.message : String(error);
+  return code === "ERR_MODULE_NOT_FOUND" && message.includes("slipway-switchboard-js");
+}
 
 function exampleFetch(input: {
   runtimeEnvValues: Record<string, string>;
