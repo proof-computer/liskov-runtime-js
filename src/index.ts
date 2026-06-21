@@ -1383,10 +1383,27 @@ async function allowBootstrapHostnames(
   const uniqueHostnames = [...new Set(hostnames.filter((hostname): hostname is string => Boolean(hostname)))];
   if (uniqueHostnames.length === 0) return;
   try {
-    await Promise.resolve(addAllowedHostnames.call(net, uniqueHostnames));
+    await promiseWithTimeout(
+      Promise.resolve(addAllowedHostnames.call(net, uniqueHostnames)),
+      1_000
+    );
   } catch {
     // Acurast network allowlisting is a bootstrap accelerator. The following
     // diagnostic/runtime-env requests still report the real network failure.
+  }
+}
+
+async function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

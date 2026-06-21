@@ -115,6 +115,41 @@ describe("top-level Slipway runtime bootstrap", () => {
     }
   });
 
+  it("continues when Acurast hostname allowlisting never settles", async () => {
+    const env: Record<string, string | undefined> = {
+      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+        v: 1,
+        u: "https://slipway.test",
+        a: "generic-worker",
+        p: "1".repeat(64),
+        d: "42"
+      })
+    };
+    let fetchedRuntimeEnv = false;
+    const startedAt = Date.now();
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      std: {
+        net: {
+          addAllowedHostnames: () => new Promise<never>(() => undefined)
+        }
+      },
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      fetchImpl: (async (url) => {
+        const parsed = new URL(String(url));
+        fetchedRuntimeEnv = parsed.pathname === "/api/jobs/runtime-env";
+        return jsonResponse(runtimeEnvResponse());
+      }) as typeof fetch
+    });
+    try {
+      assert.equal(fetchedRuntimeEnv, true);
+      assert.ok(Date.now() - startedAt < 2_500);
+    } finally {
+      handle.stop();
+    }
+  });
+
   it("defaults signed secret bootstrap to the Liskov secrets host", () => {
     assert.equal(DEFAULT_LISKOV_SECRETS_URL, "https://secrets.liskov.proof.computer");
     assert.equal(liskovSignedBootstrapUrls({ env: {} }).secretsUrl, "https://secrets.liskov.proof.computer");
