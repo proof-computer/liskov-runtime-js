@@ -23,7 +23,7 @@ The first supported dependency source is the public GitHub release tag:
 ```json
 {
   "dependencies": {
-    "@proof-computer/liskov-runtime": "github:proof-computer/liskov-runtime-js#v0.3.4"
+    "@proof-computer/liskov-runtime": "github:proof-computer/liskov-runtime-js#v0.3.6"
   }
 }
 ```

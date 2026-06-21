@@ -270,12 +270,14 @@ export async function bootstrapSlipwayRuntime(
   const env = options.env ?? process.env;
   const home = resolveSlipwayHome({ home: options.home, env });
   const std = resolveRuntimeStd(options.std);
-  const lookup = { env, std, environment: options.environment };
-  const identityProvider = options.identityProvider ?? createAcurastRuntimeAdapter(lookup);
-  let slipwayConfig = readSlipwayRuntimeEnvConfig(lookup);
-  let lockboxConfig = readLockboxRuntimeConfig(lookup);
-  const startedAtMs = options.nowMs?.() ?? Date.now();
   const signedBootstrapMode = options.bootstrap?.mode ?? "auto";
+  const lookup = { env, std, environment: options.environment };
+  const legacyBootstrapLookup = signedBootstrapMode === "off" ? lookup : { env, std };
+  const identityLookup = signedBootstrapMode === "off" ? lookup : { env, std };
+  const identityProvider = options.identityProvider ?? createAcurastRuntimeAdapter(identityLookup);
+  let slipwayConfig = readSlipwayRuntimeEnvConfig(legacyBootstrapLookup);
+  let lockboxConfig = readLockboxRuntimeConfig(legacyBootstrapLookup);
+  const startedAtMs = options.nowMs?.() ?? Date.now();
   const shouldResolveSignedBootstrap =
     signedBootstrapMode !== "off" && (
       signedBootstrapMode === "signed" ||
@@ -287,7 +289,6 @@ export async function bootstrapSlipwayRuntime(
       mode: signedBootstrapMode,
       env,
       std,
-      environment: options.environment,
       identityProvider,
       fetchImpl: options.fetchImpl,
       nowMs: options.nowMs,
@@ -329,8 +330,8 @@ export async function bootstrapSlipwayRuntime(
     ok: true,
     component: "runtime-bootstrap",
     attrs: {
-      ...runtimeCapabilityAttrs(lookup, options.fetchImpl),
-      ...runtimeBootstrapAttrs(lookup, slipwayConfig, lockboxConfig)
+      ...runtimeCapabilityAttrs(legacyBootstrapLookup, options.fetchImpl),
+      ...runtimeBootstrapAttrs(legacyBootstrapLookup, slipwayConfig, lockboxConfig)
     }
   });
 

@@ -224,6 +224,74 @@ describe("top-level Slipway runtime bootstrap", () => {
     }
   });
 
+  it("does not touch legacy environment lookup before signed bootstrap", async () => {
+    const env: Record<string, string | undefined> = {};
+    const order: string[] = [];
+    const std = {
+      job: {
+        getId: () => "job-1",
+        getEncryptionKeys: () => ({ p256: "0x" + "ab".repeat(33) })
+      },
+      device: {
+        getAddress: () => "processor-1"
+      },
+      signers: {
+        ed25519: {
+          sign: () => "0x" + "11".repeat(64)
+        },
+        secp256r1: {
+          encrypt: () => "0x00",
+          decrypt: () => "0x" + Buffer.from(JSON.stringify(plaintextPayload()), "utf8").toString("hex")
+        }
+      }
+    };
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      std,
+      environment() {
+        throw new Error("legacy environment lookup should not run for signed bootstrap");
+      },
+      bootstrap: {
+        coreUrl: "https://liskov.test",
+        secretsUrl: "https://secrets.liskov.test"
+      },
+      nowMs: () => 1_000,
+      randomBytes: (size) => new Uint8Array(size).fill(7),
+      fetchImpl: (async (url, init) => {
+        const parsed = new URL(String(url));
+        order.push(parsed.pathname);
+        const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
+          assert.equal(request.jobId, "job-1");
+          assert.equal(request.processorId, "processor-1");
+          return jsonResponse(liskovRuntimeBootstrapResponse());
+        }
+        if (parsed.pathname === "/api/jobs/secret-bootstrap") {
+          assert.equal(request.responseEncryptionKey, "ab".repeat(33));
+          return jsonResponse(liskovSecretBootstrapResponse());
+        }
+        if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse());
+        if (parsed.pathname === "/api/jobs/secret-requests") {
+          return jsonResponse(lockboxResponse(request as { requestedSecretIds: string[] }));
+        }
+        throw new Error(`unexpected path ${parsed.pathname}`);
+      }) as typeof fetch
+    });
+    try {
+      assert.deepEqual(order, [
+        "/api/jobs/runtime-bootstrap",
+        "/api/jobs/secret-bootstrap",
+        "/api/jobs/runtime-env",
+        "/api/jobs/secret-requests"
+      ]);
+      assert.equal(env.RUNTIME_VALUE, "ok");
+      assert.equal(env.API_TOKEN, "secret");
+      assert.equal(handle.status().ready, true);
+    } finally {
+      handle.stop();
+    }
+  });
+
   it("retries transient signed bootstrap misses while Liskov catches up", async () => {
     const env: Record<string, string | undefined> = {};
     const sleeps: number[] = [];
