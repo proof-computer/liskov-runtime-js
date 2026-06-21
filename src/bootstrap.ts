@@ -485,6 +485,11 @@ function liskovSignedBootstrapErrorIsRetryable(error: unknown): boolean {
   ) {
     return false;
   }
+  // A freshly claimed job (or grant) that core has not finished indexing yet
+  // reports a transient `*_not_found`. Retry it even when the underlying
+  // transport could not preserve the HTTP status (e.g. an Acurast httpPOST
+  // failure surfaced without a recoverable status code).
+  if (error.errorCode !== undefined && error.errorCode.endsWith("_not_found")) return true;
   return [404, 409, 425, 429, 500, 502, 503, 504].includes(error.status);
 }
 

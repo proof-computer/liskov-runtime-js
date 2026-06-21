@@ -148,6 +148,45 @@ describe("runtime env lookup and Acurast adapter", () => {
     }]);
   });
 
+  it("recovers the real HTTP status and JSON body from an Acurast httpPOST error", async () => {
+    const fetchImpl = createAcurastHttpPostFetch({
+      httpPOST(_url, _body, _headers, _onSuccess, onError) {
+        onError(
+          'HTTP Post failed with {"ok":false,"error":"runtime_bootstrap_job_not_found","reason":"no match"} (404)'
+        );
+      }
+    });
+
+    const response = await fetchImpl!("https://liskov.test/api/jobs/runtime-bootstrap", {
+      method: "POST",
+      body: "{}"
+    });
+
+    assert.equal(response.ok, false);
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      error: "runtime_bootstrap_job_not_found",
+      reason: "no match"
+    });
+  });
+
+  it("falls back to 599 when an Acurast httpPOST error has no recoverable status", async () => {
+    const fetchImpl = createAcurastHttpPostFetch({
+      httpPOST(_url, _body, _headers, _onSuccess, onError) {
+        onError("network unreachable");
+      }
+    });
+
+    const response = await fetchImpl!("https://liskov.test/api/jobs/runtime-bootstrap", {
+      method: "POST",
+      body: "{}"
+    });
+
+    assert.equal(response.status, 599);
+    assert.equal(await response.text(), "network unreachable");
+  });
+
   it("returns undefined when Acurast httpPOST is unavailable", () => {
     assert.equal(createAcurastHttpPostFetch(), undefined);
   });

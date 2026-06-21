@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 
 import {
   bootstrapSlipwayRuntime,
+  createAcurastHttpPostFetch,
   DEFAULT_LISKOV_SECRETS_URL,
   decryptProofLogRecord,
   generateProofLogEncryptionKey,
@@ -331,6 +332,64 @@ describe("top-level Slipway runtime bootstrap", () => {
         const request = JSON.parse(String(init?.body)) as { requestedSecretIds: string[] };
         return jsonResponse(lockboxResponse(request));
       }) as typeof fetch
+    });
+    try {
+      assert.equal(runtimeBootstrapAttempts, 2);
+      assert.equal(sleeps[0], 5);
+      assert.equal(handle.status().ready, true);
+      assert.equal(env.API_TOKEN, "secret");
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("retries through the Acurast httpPOST adapter when core reports a transient miss", async () => {
+    // Regression: Acurast `httpPOST` surfaces a 404 through `onError` as a
+    // formatted string. The adapter must recover the 404 so the bootstrap retry
+    // fires instead of crashing on the first attempt.
+    const env: Record<string, string | undefined> = {};
+    const sleeps: number[] = [];
+    let runtimeBootstrapAttempts = 0;
+    const adapterFetch = createAcurastHttpPostFetch({
+      httpPOST(url, _body, _headers, onSuccess, onError) {
+        const parsed = new URL(url);
+        if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
+          runtimeBootstrapAttempts += 1;
+          if (runtimeBootstrapAttempts === 1) {
+            onError(
+              'HTTP Post failed with {"ok":false,"error":"runtime_bootstrap_job_not_found","reason":"not observed yet"} (404)'
+            );
+            return;
+          }
+          onSuccess(JSON.stringify(liskovRuntimeBootstrapResponse()), "cert");
+          return;
+        }
+        if (parsed.pathname === "/api/jobs/runtime-env") {
+          onSuccess(JSON.stringify(runtimeEnvResponse()), "cert");
+          return;
+        }
+        if (parsed.pathname === "/api/jobs/secret-bootstrap") {
+          onSuccess(JSON.stringify(liskovSecretBootstrapResponse()), "cert");
+          return;
+        }
+        onSuccess(JSON.stringify(lockboxResponse({ requestedSecretIds: ["api-token"] })), "cert");
+      }
+    });
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      bootstrap: {
+        coreUrl: "https://liskov.test",
+        secretsUrl: "https://secrets.liskov.test",
+        retry: { initialDelayMs: 5, intervalMs: 5, maxElapsedMs: 100, maxAttempts: 3 }
+      },
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      setTimeoutImpl: (((callback: () => void, delayMs?: number) => {
+        sleeps.push(delayMs ?? 0);
+        callback();
+        return { unref() {} };
+      }) as unknown) as typeof setTimeout,
+      fetchImpl: adapterFetch
     });
     try {
       assert.equal(runtimeBootstrapAttempts, 2);

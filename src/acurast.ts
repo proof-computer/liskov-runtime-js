@@ -102,7 +102,7 @@ export function createAcurastHttpPostFetch(options: AcurastHttpPostFetchOptions 
         body,
         headers,
         (response) => resolve(fetchResponse(response, 200)),
-        (error) => resolve(fetchResponse(error, 599))
+        (error) => resolve(acurastHttpPostErrorResponse(error))
       );
     });
   }) as typeof fetch;
@@ -190,6 +190,25 @@ function canonicalAcurastHttpPostHeaderName(key: string): string {
     default:
       return key;
   }
+}
+
+const ACURAST_HTTP_POST_DEFAULT_ERROR_STATUS = 599;
+
+// Acurast `httpPOST` surfaces any non-2xx HTTP response through `onError` as a
+// formatted string, e.g. `HTTP Post failed with {"error":"…"} (404)`. Collapsing
+// every failure into one synthetic status hides the real HTTP status and JSON
+// body from callers, which defeats status-aware retry — notably the bounded
+// 404/409 retry the Liskov signed bootstrap relies on while core finishes
+// indexing a freshly claimed job. Recover the trailing status code and the
+// embedded JSON body when present so callers see a faithful Response.
+function acurastHttpPostErrorResponse(error: string): Response {
+  const message = typeof error === "string" ? error : String(error);
+  const statusMatch = message.match(/\((\d{3})\)\s*$/u);
+  const status = statusMatch ? Number(statusMatch[1]) : ACURAST_HTTP_POST_DEFAULT_ERROR_STATUS;
+  const jsonStart = message.indexOf("{");
+  const jsonEnd = message.lastIndexOf("}");
+  const body = jsonStart !== -1 && jsonEnd > jsonStart ? message.slice(jsonStart, jsonEnd + 1) : message;
+  return fetchResponse(body, status);
 }
 
 function fetchResponse(body: string, status: number): Response {
