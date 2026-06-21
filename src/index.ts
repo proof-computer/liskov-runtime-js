@@ -1377,34 +1377,11 @@ async function allowBootstrapHostnames(
   std: AcurastRuntimeStd | undefined,
   hostnames: Array<string | null>
 ): Promise<void> {
-  const net = std?.net;
-  const addAllowedHostnames = net?.addAllowedHostnames;
-  if (typeof addAllowedHostnames !== "function") return;
-  const uniqueHostnames = [...new Set(hostnames.filter((hostname): hostname is string => Boolean(hostname)))];
-  if (uniqueHostnames.length === 0) return;
-  try {
-    await promiseWithTimeout(
-      Promise.resolve(addAllowedHostnames.call(net, uniqueHostnames)),
-      1_000
-    );
-  } catch {
-    // Acurast network allowlisting is a bootstrap accelerator. The following
-    // diagnostic/runtime-env requests still report the real network failure.
-  }
-}
-
-async function promiseWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), timeoutMs);
-      })
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
+  void std;
+  void hostnames;
+  // Acurast hostname allowlisting requires deployment-owner DNS TXT records for
+  // both forward and reverse DNS. Do not call it until those records are
+  // explicitly provisioned for the Liskov domains.
 }
 
 function urlHostOrNull(value: string | undefined): string | null {

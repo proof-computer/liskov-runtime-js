@@ -2,8 +2,8 @@
 
 Adapted from Acurast's `app-fetch` example. This version boots
 `@proof-computer/slipway-runtime`, fetches a price payload, posts a webhook
-payload, allowlists the app fetch hosts when Acurast `_STD_.net` is available,
-and writes a Slipway runtime log.
+payload, and writes a Slipway runtime log. It does not call Acurast host
+allowlisting; that requires deployment-owner `_acu.*` DNS proofs.
 
 The example is source-only in this repository. It is not included in the npm
 package tarball.

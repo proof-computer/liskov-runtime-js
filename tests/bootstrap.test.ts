@@ -63,7 +63,7 @@ describe("top-level Slipway runtime bootstrap", () => {
     }
   });
 
-  it("allowlists bootstrap hosts before Slipway and Lockbox network requests", async () => {
+  it("does not implicitly allowlist bootstrap hosts before network requests", async () => {
     const env: Record<string, string | undefined> = {
       PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
         v: 1,
@@ -106,7 +106,6 @@ describe("top-level Slipway runtime bootstrap", () => {
     });
     try {
       assert.deepEqual(order, [
-        "allow:slipway.test,lockbox.test",
         "fetch:/api/jobs/runtime-env",
         "fetch:/api/jobs/secret-requests"
       ]);
@@ -115,7 +114,7 @@ describe("top-level Slipway runtime bootstrap", () => {
     }
   });
 
-  it("continues when Acurast hostname allowlisting never settles", async () => {
+  it("does not call Acurast hostname allowlisting when it is present", async () => {
     const env: Record<string, string | undefined> = {
       PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
         v: 1,
@@ -126,12 +125,16 @@ describe("top-level Slipway runtime bootstrap", () => {
       })
     };
     let fetchedRuntimeEnv = false;
+    let allowlistCalled = false;
     const startedAt = Date.now();
     const handle = await bootstrapSlipwayRuntime({
       env,
       std: {
         net: {
-          addAllowedHostnames: () => new Promise<never>(() => undefined)
+          addAllowedHostnames: () => {
+            allowlistCalled = true;
+            return new Promise<never>(() => undefined);
+          }
         }
       },
       identityProvider: fakeIdentityProvider(),
@@ -144,6 +147,7 @@ describe("top-level Slipway runtime bootstrap", () => {
     });
     try {
       assert.equal(fetchedRuntimeEnv, true);
+      assert.equal(allowlistCalled, false);
       assert.ok(Date.now() - startedAt < 2_500);
     } finally {
       handle.stop();

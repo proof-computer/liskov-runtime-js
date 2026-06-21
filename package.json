@@ -1,6 +1,6 @@
 {
   "name": "@proof-computer/liskov-runtime",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "private": false,
   "description": "Job-side Liskov runtime bootstrap SDK for PROOF Applications on Acurast.",
   "type": "module",

@@ -17,7 +17,7 @@ const JOB_SIGNER_PRIVATE_KEY = "0x0000000000000000000000000000000000000000000000
 const REGISTRY_ADDRESS = "0x65d6B76BeC50F46D198fFa3598E381a298025Da0";
 
 describe("Slipway-backed Acurast examples", () => {
-  it("runs the env-vars example through runtime-env, redaction, allowlisting, and Slipway logging", async () => {
+  it("runs the env-vars example through runtime-env, redaction, and Slipway logging", async () => {
     const secretValue = "super-secret-env-value";
     const factoryToken = "bbx_sf_env_secret";
     const dek = generateProofLogEncryptionKey();
@@ -30,7 +30,6 @@ describe("Slipway-backed Acurast examples", () => {
       })
     };
     const output: string[] = [];
-    const allowed: string[][] = [];
     const batches: BlackboxLogBatch[] = [];
     const webhookBodies: Array<Record<string, unknown>> = [];
     const fetchImpl = exampleFetch({
@@ -46,7 +45,7 @@ describe("Slipway-backed Acurast examples", () => {
       bootstrapSlipwayRuntime,
       runtimeOptions: {
         env,
-        std: fakeStd(allowed),
+        std: fakeStdWithoutNetwork(),
         identityProvider: fakeIdentityProvider(),
         logging: { mode: "background", spoolMode: "memory" },
         nowMs: () => 1_000
@@ -68,7 +67,6 @@ describe("Slipway-backed Acurast examples", () => {
     assert.equal(JSON.stringify(output).includes(secretValue), false);
     assert.equal(JSON.stringify(webhookBodies).includes(secretValue), false);
     assert.equal(JSON.stringify(output).includes(factoryToken), false);
-    assert.equal(allowed.some((hostnames) => hostnames.includes("webhook.example.test")), true);
     assert.equal(decryptedEvents(batches, dek).includes("example.env-vars.posted"), true);
   });
 
@@ -84,7 +82,6 @@ describe("Slipway-backed Acurast examples", () => {
       })
     };
     const output: string[] = [];
-    const allowed: string[][] = [];
     const batches: BlackboxLogBatch[] = [];
     const webhookBodies: Array<Record<string, unknown>> = [];
     const fetchImpl = exampleFetch({
@@ -102,7 +99,7 @@ describe("Slipway-backed Acurast examples", () => {
       bootstrapSlipwayRuntime,
       runtimeOptions: {
         env,
-        std: fakeStd(allowed),
+        std: fakeStdWithoutNetwork(),
         identityProvider: fakeIdentityProvider(),
         logging: { mode: "background", spoolMode: "memory" },
         nowMs: () => 1_000
@@ -118,8 +115,6 @@ describe("Slipway-backed Acurast examples", () => {
     assert.equal(result.price, 3210.5);
     assert.equal(webhookBodies.length, 1);
     assert.equal(((webhookBodies[0]?.price as Record<string, unknown> | undefined)?.value), 3210.5);
-    assert.equal(allowed.some((hostnames) => hostnames.includes("prices.example.test")), true);
-    assert.equal(allowed.some((hostnames) => hostnames.includes("webhook.example.test")), true);
     assert.equal(JSON.stringify(output).includes(factoryToken), false);
     assert.equal(decryptedEvents(batches, dek).includes("example.fetch.posted"), true);
   });
@@ -142,7 +137,6 @@ describe("Slipway-backed Acurast examples", () => {
       })
     };
     const output: string[] = [];
-    const allowed: string[][] = [];
     const batches: BlackboxLogBatch[] = [];
     const relayCalls: Array<{ label: string; body?: Record<string, unknown> }> = [];
     const fetchImpl = exampleFetch({
@@ -165,7 +159,7 @@ describe("Slipway-backed Acurast examples", () => {
       attachSlipwaySwitchboard: switchboardExample.attachSlipwaySwitchboard,
       runtimeOptions: {
         env,
-        std: fakeStd(allowed),
+        std: fakeStdWithoutNetwork(),
         identityProvider: fakeIdentityProvider(),
         logging: { mode: "background", spoolMode: "memory" },
         nowMs: () => 1_000
@@ -192,7 +186,6 @@ describe("Slipway-backed Acurast examples", () => {
       assert.equal((admission?.request as Record<string, unknown> | undefined)?.upstreamPort, handle.port);
       const ready = relayCalls.find((call) => call.label === "relay:health:ready")?.body;
       assert.equal((ready?.details as Record<string, unknown> | undefined)?.port, handle.port);
-      assert.equal(allowed.some((hostnames) => hostnames.includes("relay.example.test")), true);
       const events = decryptedEvents(batches, dek);
       assert.equal(events.includes("switchboard.process-start"), true);
       assert.equal(events.includes("example.webserver.listening"), true);
@@ -372,7 +365,7 @@ function runtimeEnvResponse(values: Record<string, string>): Record<string, unkn
   };
 }
 
-function fakeStd(allowed: string[][]) {
+function fakeStdWithoutNetwork() {
   return {
     job: {
       getId: () => "42",
@@ -381,11 +374,6 @@ function fakeStd(allowed: string[][]) {
     signers: {
       ed25519: {
         sign: () => "b".repeat(128)
-      }
-    },
-    net: {
-      addAllowedHostnames: (hostnames: string[]) => {
-        allowed.push(hostnames);
       }
     }
   };

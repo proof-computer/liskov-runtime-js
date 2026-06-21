@@ -21,12 +21,6 @@ export interface SlipwayRuntimeHandle {
 
 export type BootstrapSlipwayRuntime = (options?: Record<string, unknown>) => Promise<SlipwayRuntimeHandle>;
 
-export interface AcurastRuntimeStdLike {
-  net?: {
-    addAllowedHostnames?: (hostnames: string[]) => unknown;
-  };
-}
-
 export interface AcurastFetchExampleOptions {
   bootstrapSlipwayRuntime?: BootstrapSlipwayRuntime;
   runtimeOptions?: Record<string, unknown>;
@@ -37,7 +31,6 @@ export interface AcurastFetchExampleOptions {
   priceUrl?: string;
   symbol?: string;
   targetCurrency?: string;
-  std?: AcurastRuntimeStdLike;
 }
 
 export interface AcurastFetchExampleResult {
@@ -76,7 +69,6 @@ export async function runAcurastFetchExample(
       throw new Error("WEBHOOK_URL is required for the Slipway fetch example");
     }
 
-    await allowHostnames(resolveStd(options), [priceUrl, webhookUrl]);
     const priceResponse = await fetchImpl(priceUrl);
     const priceBody = await priceResponse.json() as Record<string, unknown>;
     const price = Number(priceBody[targetCurrency]);
@@ -144,32 +136,6 @@ function runtimeSummary(runtime: SlipwayRuntimeHandle): Record<string, unknown> 
     deploymentId: status.deploymentId,
     revision: status.revision
   };
-}
-
-async function allowHostnames(std: AcurastRuntimeStdLike | undefined, urls: string[]): Promise<void> {
-  const hostnames = [...new Set(urls.map((url) => hostnameOrUndefined(url)).filter(isString))];
-  if (hostnames.length === 0 || typeof std?.net?.addAllowedHostnames !== "function") {
-    return;
-  }
-  await Promise.resolve(std.net.addAllowedHostnames(hostnames));
-}
-
-function resolveStd(options: AcurastFetchExampleOptions): AcurastRuntimeStdLike | undefined {
-  return options.std ??
-    (options.runtimeOptions?.std as AcurastRuntimeStdLike | undefined) ??
-    (globalThis as { _STD_?: AcurastRuntimeStdLike })._STD_;
-}
-
-function hostnameOrUndefined(rawUrl: string): string | undefined {
-  try {
-    return new URL(rawUrl).hostname;
-  } catch {
-    return undefined;
-  }
-}
-
-function isString(value: string | undefined): value is string {
-  return typeof value === "string" && value.length > 0;
 }
 
 function isDirectRun(): boolean {

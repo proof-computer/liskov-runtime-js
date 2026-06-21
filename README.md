@@ -405,13 +405,12 @@ Current v0 behavior:
 
 ## Acurast Host Allowlisting
 
-When `_STD_.net.addAllowedHostnames()` is available, bootstrap attempts to
-allowlist Liskov, Lockbox, and logging hosts before the first network request.
-Allowlisting failures are ignored so the following fetch still reports the
-real network error through diagnostics.
-
-Application examples that fetch external hosts should still allowlist their
-own app-specific hosts.
+The runtime does not call `_STD_.net.addAllowedHostnames()` implicitly.
+Acurast only admits hosts to the unrestricted outbound whitelist when the
+deployment owner has configured the required forward and reverse `_acu.*` DNS
+TXT proofs for each hostname/IP. Until Liskov owns and documents those records
+for a host, the runtime must make ordinary network requests and report any
+network failure through diagnostics.
 
 ## Testing Fakes
 
@@ -430,9 +429,6 @@ const env: Record<string, string | undefined> = {
 
 const runtime = await bootstrapSlipwayRuntime({
   env,
-  std: {
-    net: { addAllowedHostnames: async () => undefined }
-  },
   identityProvider: fakeIdentityProvider,
   fetchImpl: fakeFetch,
   nowMs: () => 1_000,
@@ -449,8 +445,8 @@ assertions.
 
 The repository tests prove runtime-env, required/background/off secrets,
 factory-token logging, early buffer drain, config refresh, diagnostics,
-health, host allowlisting, and source-only Acurast examples without artifact
-pins or live deployment.
+health, DNS-gated no-allowlist behavior, and source-only Acurast examples
+without artifact pins or live deployment.
 
 ## Examples
 
@@ -458,8 +454,8 @@ Source-only example ports live under `examples/`:
 
 - `examples/acurast-env-vars`: reads runtime-env values, posts only a redacted
   env summary, and writes through `runtime.log()`.
-- `examples/acurast-fetch`: allowlists app fetch hosts, fetches a price
-  payload, posts a webhook payload, and writes a Liskov runtime log.
+- `examples/acurast-fetch`: fetches a price payload, posts a webhook payload,
+  and writes a Liskov runtime log.
 
 The Switchboard webserver example lives in
 `public_repos/slipway-switchboard-js/examples/acurast-webserver` because
