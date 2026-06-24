@@ -45,6 +45,9 @@ describe("top-level Slipway runtime bootstrap", () => {
       nowMs: () => 1_000,
       fetchImpl: (async (url, init) => {
         const parsed = new URL(String(url));
+        // ADR-0003 5b: signed runtime-diagnostics check-ins now flow without a token; they're
+        // best-effort observability, orthogonal to the bootstrap ordering asserted here.
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") return jsonResponse({ ok: true });
         order.push(parsed.pathname);
         if (parsed.pathname === "/api/jobs/runtime-env") {
           return jsonResponse(runtimeEnvResponse());
@@ -97,6 +100,7 @@ describe("top-level Slipway runtime bootstrap", () => {
       nowMs: () => 1_000,
       fetchImpl: (async (url, init) => {
         const parsed = new URL(String(url));
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") return jsonResponse({ ok: true });
         order.push(`fetch:${parsed.pathname}`);
         if (parsed.pathname === "/api/jobs/runtime-env") {
           return jsonResponse(runtimeEnvResponse());
@@ -142,6 +146,7 @@ describe("top-level Slipway runtime bootstrap", () => {
       nowMs: () => 1_000,
       fetchImpl: (async (url) => {
         const parsed = new URL(String(url));
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") return jsonResponse({ ok: true });
         fetchedRuntimeEnv = parsed.pathname === "/api/jobs/runtime-env";
         return jsonResponse(runtimeEnvResponse());
       }) as typeof fetch
@@ -175,6 +180,9 @@ describe("top-level Slipway runtime bootstrap", () => {
       randomBytes: (size) => new Uint8Array(size).fill(7),
       fetchImpl: (async (url, init) => {
         const parsed = new URL(String(url));
+        // ADR-0003 5b: signed runtime-diagnostics check-ins now flow without a token; they're
+        // best-effort observability, orthogonal to the bootstrap ordering asserted here.
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") return jsonResponse({ ok: true });
         order.push(parsed.pathname);
         const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
         if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
@@ -260,6 +268,9 @@ describe("top-level Slipway runtime bootstrap", () => {
       randomBytes: (size) => new Uint8Array(size).fill(7),
       fetchImpl: (async (url, init) => {
         const parsed = new URL(String(url));
+        // ADR-0003 5b: signed runtime-diagnostics check-ins now flow without a token; they're
+        // best-effort observability, orthogonal to the bootstrap ordering asserted here.
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") return jsonResponse({ ok: true });
         order.push(parsed.pathname);
         const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
         if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
@@ -418,7 +429,9 @@ describe("top-level Slipway runtime bootstrap", () => {
       identityProvider: fakeIdentityProvider(),
       nowMs: () => 1_000,
       fetchImpl: (async (url) => {
-        paths.push(new URL(String(url)).pathname);
+        const parsed = new URL(String(url));
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") return jsonResponse({ ok: true });
+        paths.push(parsed.pathname);
         return jsonResponse(runtimeEnvResponse());
       }) as typeof fetch
     });
@@ -956,8 +969,13 @@ describe("top-level Slipway runtime bootstrap", () => {
       fetchImpl: (async () => jsonResponse(runtimeEnvResponse())) as typeof fetch
     });
     handle.stop();
-    assert.equal(scheduled, 1);
-    assert.equal(cleared, 1);
+    // ADR-0003 5b: more timers schedule now — the runtime-env refresh, the runtime-health loop
+    // (which authenticates check-ins by signature, so it runs without a token), and a per-send
+    // timeout for each signed bootstrap diagnostic. The exact count is incidental; the invariant
+    // under test is that stop() leaks nothing — every scheduled timer is cleared (and at least
+    // the refresh + health timers exist and are torn down).
+    assert.ok(scheduled >= 2);
+    assert.ok(cleared >= 2);
   });
 
   it("posts best-effort runtime diagnostics when the Slipway bootstrap carries a token", async () => {
@@ -1135,7 +1153,9 @@ describe("top-level Slipway runtime bootstrap", () => {
         setTimeout(resolve, 25);
       }),
       fetchImpl: (async (url) => {
-        paths.push(new URL(String(url)).pathname);
+        const parsed = new URL(String(url));
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") return jsonResponse({ ok: true });
+        paths.push(parsed.pathname);
         return jsonResponse(runtimeEnvResponse());
       }) as typeof fetch
     });

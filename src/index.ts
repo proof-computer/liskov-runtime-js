@@ -427,6 +427,10 @@ export async function bootstrapSlipwayRuntime(
     runtimeHealthHandle = startSlipwayRuntimeHealth({
       bootstrap: slipwayConfig,
       emitter: diagnostics,
+      // ADR-0003 Phase 5b: the health-loop scheduler gates on "can we authenticate a remote
+      // check-in?" — which is now token OR signature. Pass the identity provider so the loop
+      // still runs (and signs) when the bootstrap carries no diagnostics token.
+      identityProvider,
       intervalMs: options.runtimeHealth?.intervalMs,
       initialDelayMs: options.runtimeHealth?.initialDelayMs,
       diagnosticSendTimeoutMs: options.diagnosticSendTimeoutMs ?? options.runtimeHealth?.sendTimeoutMs,

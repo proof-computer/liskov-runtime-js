@@ -2,6 +2,7 @@ import type { RuntimeIdentityProvider } from "./acurast.js";
 import type { SlipwayRuntimeEnvConfig } from "./runtime-env.js";
 import {
   assertSecureRuntimeUrl,
+  canonicalJson,
   safeErrorMessage
 } from "./shared.js";
 
@@ -79,10 +80,11 @@ export function createSlipwayRuntimeDiagnosticEmitter(
           // Local diagnostics are observability only.
         }
       }
-      if (!options.bootstrap?.diagnosticsToken) return;
+      const bootstrap = options.bootstrap;
+      if (!canSendRemoteDiagnostic(options) || !bootstrap) return;
       if (timestampMs < remoteDisabledUntilMs) return;
       try {
-        await sendSlipwayRuntimeDiagnostic({ ...options, bootstrap: options.bootstrap, diagnostic });
+        await sendSlipwayRuntimeDiagnostic({ ...options, bootstrap, diagnostic });
       } catch {
         remoteDisabledUntilMs = (options.nowMs?.() ?? Date.now()) + diagnosticRemoteBackoffMs(options);
         // Remote diagnostics are best-effort and must not mask runtime bootstrap errors.
@@ -110,7 +112,7 @@ export function startSlipwayRuntimeHealth(options: SlipwayRuntimeHealthOptions =
     });
   };
   const schedule = (delayMs: number) => {
-    if (stopped || intervalMs <= 0 || !options.bootstrap?.diagnosticsToken) return;
+    if (stopped || intervalMs <= 0 || !canSendRemoteDiagnostic(options)) return;
     if (timer) clearTimeoutImpl(timer);
     timer = setTimeoutImpl(() => {
       void sendNow().finally(() => schedule(intervalMs));
@@ -137,6 +139,52 @@ export function redactDiagnostic(diagnostic: SlipwayRuntimeDiagnostic): SlipwayR
   };
 }
 
+/**
+ * ADR-0003 Phase 5b: the canonical message a signed check-in covers. The runtime signs these
+ * bytes with its Acurast ed25519 key; Slipway verifies the signature against the processor's
+ * stored `runtimeSigner`, so a check-in no longer needs the bootstrap diagnostics token.
+ *
+ * This MUST stay byte-for-byte identical to the Rust `slipway_runtime_diagnostic_signed_message`
+ * (slipway-executor `runtime_diagnostics.rs`): canonical JSON over the auth-bound fields only —
+ * identity (`applicationId`/`policyDigest`/`deploymentId`) plus the state transition
+ * (`stage`/`status`/`sequence`/`timestampMs`). `policyDigest` is lower-cased to match the
+ * server's parse. The golden string is asserted in both repos' tests; change it in both or
+ * signed check-ins silently fail to verify.
+ */
+export function slipwayRuntimeDiagnosticRequestMessage(input: {
+  applicationId: string;
+  policyDigest: string;
+  deploymentId: string;
+  stage: string;
+  status: string;
+  sequence: number;
+  timestampMs: number;
+}): Uint8Array {
+  return Buffer.from(
+    canonicalJson({
+      domain: SLIPWAY_RUNTIME_DIAGNOSTIC_DOMAIN,
+      applicationId: input.applicationId,
+      policyDigest: input.policyDigest.toLowerCase(),
+      deploymentId: input.deploymentId,
+      stage: input.stage,
+      status: input.status,
+      sequence: input.sequence,
+      timestampMs: input.timestampMs
+    }),
+    "utf8"
+  );
+}
+
+/**
+ * ADR-0003 Phase 5b accept-both: a remote check-in can authenticate with the legacy bootstrap
+ * token OR an ed25519 signature, so it's worth sending whenever we have a bootstrap plus either
+ * a token or an identity provider that can sign. (Was: token-only.)
+ */
+function canSendRemoteDiagnostic(options: SlipwayRuntimeDiagnosticEmitterOptions): boolean {
+  if (!options.bootstrap) return false;
+  return Boolean(options.bootstrap.diagnosticsToken) || Boolean(options.identityProvider);
+}
+
 async function sendSlipwayRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitterOptions & {
   bootstrap: SlipwayRuntimeEnvConfig;
   diagnostic: SlipwayRuntimeDiagnostic;
@@ -151,6 +199,27 @@ async function sendSlipwayRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitt
   } catch {
     identity = undefined;
   }
+  // ADR-0003 Phase 5b: sign the canonical request with the processor's ed25519 key so Slipway
+  // can authenticate against the stored runtimeSigner. Best-effort — if signing fails we fall
+  // back to the token (still sent below during the accept-both window). JSON.stringify drops
+  // the field when undefined, so token-only callers are byte-unchanged.
+  let signature: string | undefined;
+  if (input.identityProvider) {
+    try {
+      const message = slipwayRuntimeDiagnosticRequestMessage({
+        applicationId: input.bootstrap.applicationId,
+        policyDigest: input.bootstrap.policyDigest,
+        deploymentId: input.bootstrap.deploymentId,
+        stage: input.diagnostic.stage,
+        status: input.diagnostic.status,
+        sequence: input.diagnostic.sequence,
+        timestampMs: input.diagnostic.timestampMs
+      });
+      signature = await input.identityProvider.sign(message);
+    } catch {
+      signature = undefined;
+    }
+  }
   const controller = typeof AbortController === "function" ? new AbortController() : undefined;
   const fetchPromise = fetchImpl(url.toString(), {
     method: "POST",
@@ -162,6 +231,7 @@ async function sendSlipwayRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitt
       policyDigest: input.bootstrap.policyDigest,
       deploymentId: input.bootstrap.deploymentId,
       token: input.bootstrap.diagnosticsToken,
+      signature,
       stage: input.diagnostic.stage,
       status: input.diagnostic.status,
       sequence: input.diagnostic.sequence,
