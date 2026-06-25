@@ -169,6 +169,7 @@ describe("top-level Slipway runtime bootstrap", () => {
     const env: Record<string, string | undefined> = {};
     const order: string[] = [];
     const signedMessages: string[] = [];
+    const diagnosticBodies: Record<string, unknown>[] = [];
     const handle = await bootstrapSlipwayRuntime({
       env,
       bootstrap: {
@@ -180,11 +181,14 @@ describe("top-level Slipway runtime bootstrap", () => {
       randomBytes: (size) => new Uint8Array(size).fill(7),
       fetchImpl: (async (url, init) => {
         const parsed = new URL(String(url));
+        const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
         // ADR-0003 5b: signed runtime-diagnostics check-ins now flow without a token; they're
         // best-effort observability, orthogonal to the bootstrap ordering asserted here.
-        if (parsed.pathname === "/api/jobs/runtime-diagnostics") return jsonResponse({ ok: true });
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") {
+          diagnosticBodies.push(request);
+          return jsonResponse({ ok: true });
+        }
         order.push(parsed.pathname);
-        const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
         if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
           assert.equal(request.domain, "proof.liskov.runtime-bootstrap-request.v1");
           assert.equal(request.applicationId, undefined);
@@ -224,10 +228,19 @@ describe("top-level Slipway runtime bootstrap", () => {
       assert.equal(handle.status().capabilities.secrets.state, "ready");
       const runtimeBootstrapMessage = JSON.parse(signedMessages[0]!) as Record<string, unknown>;
       const secretBootstrapMessage = JSON.parse(signedMessages[1]!) as Record<string, unknown>;
+      const runtimeDiagnosticMessage = JSON.parse(signedMessages[2]!) as Record<string, unknown>;
       assert.equal(runtimeBootstrapMessage.domain, "proof.liskov.runtime-bootstrap-request.v1");
       assert.equal(runtimeBootstrapMessage.applicationId, undefined);
       assert.equal(secretBootstrapMessage.domain, "proof.liskov.secret-bootstrap-request.v1");
       assert.equal(secretBootstrapMessage.responseEncryptionKey, "ab".repeat(33));
+      assert.equal(runtimeDiagnosticMessage.domain, "proof.slipway.runtime-diagnostic.v1");
+      assert.equal(runtimeDiagnosticMessage.stage, "runtime.start");
+      const startDiagnostic = diagnosticBodies.find((body) => body.stage === "runtime.start");
+      assert.ok(startDiagnostic);
+      assert.equal(startDiagnostic.token, undefined);
+      assert.equal(startDiagnostic.signature, "0x" + "11".repeat(64));
+      assert.equal(startDiagnostic.jobId, "job-1");
+      assert.equal(startDiagnostic.processorAddress, "processor-1");
     } finally {
       handle.stop();
     }

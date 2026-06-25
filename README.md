@@ -319,9 +319,12 @@ not silently degrade to a no-op.
 ## Diagnostics And Health
 
 Runtime diagnostics are best-effort and bounded. When
-`PROOF_SLIPWAY_BOOTSTRAP` includes a diagnostics token, diagnostics are POSTed
-to `/api/jobs/runtime-diagnostics` as
-`proof.slipway.runtime-diagnostic.v1`.
+Liskov bootstrap is available and the runtime can authenticate with either a
+diagnostics token or the Acurast runtime identity provider, diagnostics are
+POSTed to `/api/jobs/runtime-diagnostics` as
+`proof.slipway.runtime-diagnostic.v1`. Signed-bootstrap jobs do not need a
+diagnostics token; the request carries a runtime signature, job id, and
+processor address when identity is available.
 
 Useful stages include:
 
@@ -348,10 +351,10 @@ default timeout. Remote diagnostic failures pause further remote diagnostic
 attempts for 30 seconds so startup, runtime-env, and Lockbox flows cannot be
 blocked by observability.
 
-Health diagnostics start when Liskov bootstrap includes a diagnostics token.
-Defaults are a 30 second initial delay and 30 second interval. Compact
-bootstrap health fields `x.h.i`, `x.h.d`, and `x.h.to`, or the matching
-expanded fields, override interval, initial delay, and send timeout.
+Health diagnostics start under the same authentication rule as other remote
+diagnostics. Defaults are a 30 second initial delay and 30 second interval.
+Compact bootstrap health fields `x.h.i`, `x.h.d`, and `x.h.to`, or the
+matching expanded fields, override interval, initial delay, and send timeout.
 
 Diagnostics redact string fields that look like tokens, secrets, private keys,
 signatures, passwords, or authorization values. Count and boolean presence
