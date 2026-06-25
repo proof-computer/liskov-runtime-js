@@ -12,11 +12,11 @@ interface PackageJson {
 }
 
 describe("public package metadata", () => {
-  it("is ready for the v0.3.8 Liskov runtime package path", async () => {
+  it("is ready for the v0.3.9 Liskov runtime package path", async () => {
     const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as PackageJson;
 
     assert.equal(packageJson.name, "@proof-computer/liskov-runtime");
-    assert.equal(packageJson.version, "0.3.8");
+    assert.equal(packageJson.version, "0.3.9");
     assert.equal(packageJson.private, false);
     assert.deepEqual(packageJson.repository, {
       type: "git",
