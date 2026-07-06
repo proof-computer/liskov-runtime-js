@@ -367,6 +367,131 @@ describe("top-level Slipway runtime bootstrap", () => {
     }
   });
 
+  it("tolerates a permanently absent grant when secrets are optional (background mode)", async () => {
+    // Prod 2026-07-06: an app without a lockbox grant 404'd secret-bootstrap
+    // (job_grant_not_found) and the whole job died even though core had said
+    // secrets.required=false. Optional discovery must resolve without lockbox.
+    const env: Record<string, string | undefined> = {};
+    let secretBootstrapAttempts = 0;
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      bootstrap: {
+        coreUrl: "https://liskov.test",
+        secretsUrl: "https://secrets.liskov.test",
+        retry: { initialDelayMs: 1, intervalMs: 1, maxElapsedMs: 50, maxAttempts: 2 }
+      },
+      secrets: { mode: "background" },
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      setTimeoutImpl: (((callback: () => void) => {
+        callback();
+        return { unref() {} };
+      }) as unknown) as typeof setTimeout,
+      fetchImpl: (async (url) => {
+        const parsed = new URL(String(url));
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") return jsonResponse({ ok: true });
+        if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
+          return jsonResponse({
+            ...liskovRuntimeBootstrapResponse(),
+            secrets: { required: false, url: "https://secrets.liskov.test" }
+          });
+        }
+        if (parsed.pathname === "/api/jobs/secret-bootstrap") {
+          secretBootstrapAttempts += 1;
+          return new Response(
+            JSON.stringify({ ok: false, error: "job_grant_not_found", reason: "no grant recorded" }),
+            { status: 404, headers: { "content-type": "application/json" } }
+          );
+        }
+        if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse());
+        throw new Error(`unexpected path ${parsed.pathname}`);
+      }) as typeof fetch
+    });
+    try {
+      assert.equal(secretBootstrapAttempts, 2, "retries the optional probe before giving up");
+      assert.equal(env.RUNTIME_VALUE, "ok", "runtime-env still delivered");
+      assert.equal(env.API_TOKEN, undefined, "no lockbox secrets without a grant");
+    } finally {
+      handle.stop();
+    }
+  });
+
+  it("keeps a missing grant fatal when core declares secrets required", async () => {
+    await assert.rejects(
+      bootstrapSlipwayRuntime({
+        env: {},
+        bootstrap: {
+          coreUrl: "https://liskov.test",
+          secretsUrl: "https://secrets.liskov.test",
+          retry: { initialDelayMs: 1, intervalMs: 1, maxElapsedMs: 50, maxAttempts: 2 }
+        },
+        secrets: { mode: "background" },
+        identityProvider: fakeIdentityProvider(),
+        nowMs: () => 1_000,
+        setTimeoutImpl: (((callback: () => void) => {
+          callback();
+          return { unref() {} };
+        }) as unknown) as typeof setTimeout,
+        fetchImpl: (async (url) => {
+          const parsed = new URL(String(url));
+          if (parsed.pathname === "/api/jobs/runtime-diagnostics") return jsonResponse({ ok: true });
+          // Default fixture: secrets.required = true.
+          if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
+            return jsonResponse(liskovRuntimeBootstrapResponse());
+          }
+          if (parsed.pathname === "/api/jobs/secret-bootstrap") {
+            return new Response(
+              JSON.stringify({ ok: false, error: "job_grant_not_found", reason: "no grant recorded" }),
+              { status: 404, headers: { "content-type": "application/json" } }
+            );
+          }
+          if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse());
+          throw new Error(`unexpected path ${parsed.pathname}`);
+        }) as typeof fetch
+      }),
+      /job_grant_not_found|404/u
+    );
+  });
+
+  it("keeps a missing grant fatal when the caller demands secrets", async () => {
+    await assert.rejects(
+      bootstrapSlipwayRuntime({
+        env: {},
+        bootstrap: {
+          coreUrl: "https://liskov.test",
+          secretsUrl: "https://secrets.liskov.test",
+          retry: { initialDelayMs: 1, intervalMs: 1, maxElapsedMs: 50, maxAttempts: 2 }
+        },
+        secrets: { mode: "required" },
+        identityProvider: fakeIdentityProvider(),
+        nowMs: () => 1_000,
+        setTimeoutImpl: (((callback: () => void) => {
+          callback();
+          return { unref() {} };
+        }) as unknown) as typeof setTimeout,
+        fetchImpl: (async (url) => {
+          const parsed = new URL(String(url));
+          if (parsed.pathname === "/api/jobs/runtime-diagnostics") return jsonResponse({ ok: true });
+          if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
+            return jsonResponse({
+              ...liskovRuntimeBootstrapResponse(),
+              secrets: { required: false, url: "https://secrets.liskov.test" }
+            });
+          }
+          if (parsed.pathname === "/api/jobs/secret-bootstrap") {
+            return new Response(
+              JSON.stringify({ ok: false, error: "job_grant_not_found", reason: "no grant recorded" }),
+              { status: 404, headers: { "content-type": "application/json" } }
+            );
+          }
+          if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse());
+          throw new Error(`unexpected path ${parsed.pathname}`);
+        }) as typeof fetch
+      }),
+      /job_grant_not_found|404/u
+    );
+  });
+
   it("retries through the Acurast httpPOST adapter when core reports a transient miss", async () => {
     // Regression: Acurast `httpPOST` surfaces a 404 through `onError` as a
     // formatted string. The adapter must recover the 404 so the bootstrap retry

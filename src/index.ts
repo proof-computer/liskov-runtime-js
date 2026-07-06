@@ -231,10 +231,16 @@ async function resolveSignedRuntimeBootstrap(input: {
     input.requestedSecretsMode === "background";
   if (!shouldDiscoverSecrets) return;
   await allowBootstrapHostnames(input.std, [urlHostOrNull(runtimeBootstrap.secretsUrl)]);
+  // Secrets are REQUIRED when the core bootstrap says so OR the caller demanded
+  // them; a "background" request is opportunistic discovery and must never be
+  // fatal (prod 2026-07-06: an absent grant 404'd secret-bootstrap and took the
+  // whole job down even though core had said secrets.required=false).
+  const secretsRequired =
+    runtimeBootstrap.secretsRequired || input.requestedSecretsMode === "required";
   const secretBootstrap = await loadSignedSecretBootstrapOrSkip(
     input.mode,
     { ...signedOptions, secretsUrl: runtimeBootstrap.secretsUrl },
-    runtimeBootstrap.secretsRequired
+    secretsRequired
   );
   if (secretBootstrap !== undefined) input.setLockboxConfig(secretBootstrap.lockboxConfig);
 }
@@ -259,7 +265,12 @@ async function loadSignedSecretBootstrapOrSkip(
   try {
     return await loadLiskovSecretBootstrap(options);
   } catch (error) {
-    if (!required && mode === "auto" && isLiskovSignedBootstrapUnavailableError(error)) return undefined;
+    // Optional secret discovery must never take the job down: a permanently
+    // absent grant surfaces as job_grant_not_found here after retries, and the
+    // runtime is expected to run without lockbox config. Required secrets stay
+    // fatal (including identity-unavailable) so a misprovisioned job fails
+    // visibly instead of serving without its declared secrets.
+    if (!required) return undefined;
     throw error;
   }
 }
