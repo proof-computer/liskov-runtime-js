@@ -416,6 +416,58 @@ describe("top-level Slipway runtime bootstrap", () => {
     }
   });
 
+  it("honors the server's explicit retryable:false verdict without retrying", async () => {
+    // The secrets service marks a genuinely absent grant retryable:false; the
+    // _not_found heuristic must not override it into pointless retries.
+    const env: Record<string, string | undefined> = {};
+    let secretBootstrapAttempts = 0;
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      bootstrap: {
+        coreUrl: "https://liskov.test",
+        secretsUrl: "https://secrets.liskov.test",
+        retry: { initialDelayMs: 1, intervalMs: 1, maxElapsedMs: 50, maxAttempts: 5 }
+      },
+      secrets: { mode: "background" },
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      setTimeoutImpl: (((callback: () => void) => {
+        callback();
+        return { unref() {} };
+      }) as unknown) as typeof setTimeout,
+      fetchImpl: (async (url) => {
+        const parsed = new URL(String(url));
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") return jsonResponse({ ok: true });
+        if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
+          return jsonResponse({
+            ...liskovRuntimeBootstrapResponse(),
+            secrets: { required: false, url: "https://secrets.liskov.test" }
+          });
+        }
+        if (parsed.pathname === "/api/jobs/secret-bootstrap") {
+          secretBootstrapAttempts += 1;
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              error: "job_grant_not_found",
+              retryable: false,
+              reason: "no grant recorded"
+            }),
+            { status: 404, headers: { "content-type": "application/json" } }
+          );
+        }
+        if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse());
+        throw new Error(`unexpected path ${parsed.pathname}`);
+      }) as typeof fetch
+    });
+    try {
+      assert.equal(secretBootstrapAttempts, 1, "no retry after an explicit non-retryable verdict");
+      assert.equal(env.RUNTIME_VALUE, "ok");
+    } finally {
+      handle.stop();
+    }
+  });
+
   it("keeps a missing grant fatal when core declares secrets required", async () => {
     await assert.rejects(
       bootstrapSlipwayRuntime({

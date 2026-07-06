@@ -477,6 +477,10 @@ async function retrySignedBootstrapRequest<T>(
 function liskovSignedBootstrapErrorIsRetryable(error: unknown): boolean {
   if (!(error instanceof LiskovSignedBootstrapHttpError)) return false;
   if (error.retryable === true) return true;
+  // An explicit server verdict wins over the heuristics below: the secrets
+  // service marks a genuinely absent grant `retryable:false` (vs a
+  // not-yet-indexed one), and retrying it just delays the inevitable.
+  if (error.retryable === false) return false;
   if (
     error.errorCode === "runtime_bootstrap_bad_signature" ||
     error.errorCode === "bad_signature" ||
