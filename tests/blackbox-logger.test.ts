@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
-import { mkdtemp, rm } from "node:fs/promises";
+import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -14,6 +14,10 @@ import {
   readBlackboxLogConfig,
   type BlackboxLogBatch
 } from "../src/index.js";
+import {
+  installDiskSpoolModulesForTest,
+  type DiskSpoolModules
+} from "../src/blackbox-spool-internal.js";
 
 describe("Blackbox runtime logger", () => {
   it("parses compact config, signs writes, encrypts records, and keeps posted batches plaintext-free", async () => {
@@ -251,8 +255,8 @@ describe("Blackbox runtime logger", () => {
   });
 
   it("persists spool state on disk so a restarted writer keeps its sink and sequence", async (t) => {
-    const spoolDir = await mkdtemp(path.join(tmpdir(), "blackbox-spool-test-"));
-    t.after(async () => rm(spoolDir, { recursive: true, force: true }));
+    const spoolDir = await fs.mkdtemp(path.join(tmpdir(), "blackbox-spool-test-"));
+    t.after(async () => fs.rm(spoolDir, { recursive: true, force: true }));
 
     const dek = generateProofLogEncryptionKey();
     const env = {
@@ -319,4 +323,256 @@ describe("Blackbox runtime logger", () => {
     assert.equal(errors.length, 2);
     assert.match(errors[1] ?? "", /requires baseUrl/u);
   });
+
+  it("serializes concurrent disk admissions while a sink request is blocked and flushes every event exactly once", async (t) => {
+    const spoolDir = await fs.mkdtemp(path.join(tmpdir(), "blackbox-concurrent-test-"));
+    t.after(async () => fs.rm(spoolDir, { recursive: true, force: true }));
+    const dek = generateProofLogEncryptionKey();
+    const errors: string[] = [];
+    const batches: BlackboxLogBatch[] = [];
+    let releaseFirst!: () => void;
+    const firstReleased = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let firstRequestStarted!: () => void;
+    const firstRequest = new Promise<void>((resolve) => { firstRequestStarted = resolve; });
+    let requests = 0;
+    const logger = diskLogger({
+      spoolDir,
+      dek,
+      onError: (error) => errors.push(String(error)),
+      fetchImpl: (async (_url, init) => {
+        requests += 1;
+        batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
+        if (requests === 1) {
+          firstRequestStarted();
+          await firstReleased;
+        }
+        return Response.json({ ok: true });
+      }) as typeof fetch
+    });
+
+    const writes = [logger("event-000")];
+    await firstRequest;
+    for (let index = 1; index < 126; index += 1) {
+      writes.push(logger(`event-${String(index).padStart(3, "0")}`));
+    }
+    await waitFor(async () => (await durableJsonSize(spoolDir)) > 0);
+    releaseFirst();
+    await Promise.all(writes);
+
+    assert.deepEqual(errors, []);
+    assert.ok(batches.length >= 4);
+    assert.ok(batches.every((batch) => batch.encrypted.length <= 50));
+    let nextSequence = 1;
+    const events: string[] = [];
+    for (const batch of batches) {
+      assert.equal(batch.sequenceStart, nextSequence);
+      assert.equal(batch.sequenceEnd, batch.sequenceStart + batch.encrypted.length - 1);
+      nextSequence = batch.sequenceEnd + 1;
+      for (const encrypted of batch.encrypted) {
+        events.push(decryptProofLogRecord<{ event: string }>(dek, encrypted).event);
+      }
+    }
+    assert.equal(events.length, 126);
+    assert.equal(new Set(events).size, 126);
+    assert.deepEqual([...events].sort(), Array.from({ length: 126 }, (_, index) => `event-${String(index).padStart(3, "0")}`));
+  });
+
+  it("wakes the active flush for a record admitted during its completion window", async (t) => {
+    const spoolDir = await fs.mkdtemp(path.join(tmpdir(), "blackbox-late-flush-test-"));
+    t.after(async () => fs.rm(spoolDir, { recursive: true, force: true }));
+    const recordsDir = path.join(spoolDir, "records");
+    let recordListings = 0;
+    let releaseEmptyListing!: () => void;
+    const emptyListingReleased = new Promise<void>((resolve) => { releaseEmptyListing = resolve; });
+    let emptyListingReached!: () => void;
+    const emptyListing = new Promise<void>((resolve) => { emptyListingReached = resolve; });
+    const proxyFs = new Proxy(fs, {
+      get(target, property, receiver) {
+        if (property !== "readdir") return Reflect.get(target, property, receiver);
+        return async (directory: Parameters<typeof fs.readdir>[0], ...args: unknown[]) => {
+          const result = await fs.readdir(directory as string, ...(args as []));
+          if (path.resolve(String(directory)) === path.resolve(recordsDir)) {
+            recordListings += 1;
+            if (recordListings === 3) {
+              emptyListingReached();
+              await emptyListingReleased;
+            }
+          }
+          return result;
+        };
+      }
+    }) as typeof fs;
+    const restore = installDiskSpoolModulesForTest({ fs: proxyFs, path: path as DiskSpoolModules["path"] });
+    t.after(restore);
+    const batches: BlackboxLogBatch[] = [];
+    const logger = diskLogger({
+      spoolDir,
+      fetchImpl: (async (_url, init) => {
+        batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
+        return Response.json({ ok: true });
+      }) as typeof fetch
+    });
+
+    const first = logger("first");
+    await emptyListing;
+    const late = logger("late");
+    await waitFor(async () => (await fs.readdir(recordsDir)).some((file) => file.endsWith(".json")));
+    releaseEmptyListing();
+    await Promise.all([first, late]);
+
+    assert.equal(batches.length, 2);
+    assert.deepEqual(batches.map((batch) => batch.sequenceStart), [1, 2]);
+  });
+
+  it("ignores orphan temporary files for quota and tolerates a listed JSON file disappearing before stat", async (t) => {
+    const spoolDir = await fs.mkdtemp(path.join(tmpdir(), "blackbox-size-race-test-"));
+    t.after(async () => fs.rm(spoolDir, { recursive: true, force: true }));
+    const recordsDir = path.join(spoolDir, "records");
+    await fs.mkdir(recordsDir, { recursive: true });
+    await fs.mkdir(path.join(spoolDir, "batches"), { recursive: true });
+    await fs.writeFile(path.join(recordsDir, "orphan.json.deadbeef.tmp"), Buffer.alloc(11 * 1024 * 1024));
+    const disappearing = path.join(recordsDir, "disappearing.json");
+    await fs.writeFile(disappearing, "{}\n");
+    let removed = false;
+    const proxyFs = new Proxy(fs, {
+      get(target, property, receiver) {
+        if (property !== "stat") return Reflect.get(target, property, receiver);
+        return async (file: Parameters<typeof fs.stat>[0], ...args: unknown[]) => {
+          if (!removed && path.resolve(String(file)) === path.resolve(disappearing)) {
+            removed = true;
+            await fs.rm(disappearing);
+          }
+          return fs.stat(file, ...(args as []));
+        };
+      }
+    }) as typeof fs;
+    const restore = installDiskSpoolModulesForTest({ fs: proxyFs, path: path as DiskSpoolModules["path"] });
+    t.after(restore);
+    const errors: string[] = [];
+    const batches: BlackboxLogBatch[] = [];
+    const logger = diskLogger({
+      spoolDir,
+      onError: (error) => errors.push(String(error)),
+      fetchImpl: (async (_url, init) => {
+        batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
+        return Response.json({ ok: true });
+      }) as typeof fetch
+    });
+
+    await logger("survives-size-race");
+    assert.equal(removed, true);
+    assert.deepEqual(errors, []);
+    assert.equal(batches.length, 1);
+  });
+
+  it("removes an atomic-write temporary file after rename failure and preserves the original error", async (t) => {
+    const spoolDir = await fs.mkdtemp(path.join(tmpdir(), "blackbox-rename-test-"));
+    t.after(async () => fs.rm(spoolDir, { recursive: true, force: true }));
+    const original = Object.assign(new Error("original rename failure"), { code: "EIO" });
+    const proxyFs = new Proxy(fs, {
+      get(target, property, receiver) {
+        if (property === "rename") return async () => { throw original; };
+        return Reflect.get(target, property, receiver);
+      }
+    }) as typeof fs;
+    const restore = installDiskSpoolModulesForTest({ fs: proxyFs, path: path as DiskSpoolModules["path"] });
+    t.after(restore);
+    const errors: unknown[] = [];
+    const logger = diskLogger({ spoolDir, onError: (error) => errors.push(error) });
+
+    await logger("rename-fails");
+
+    assert.equal(errors[0], original);
+    const files = await fs.readdir(path.join(spoolDir, "records"));
+    assert.deepEqual(files.filter((file) => file.endsWith(".tmp")), []);
+  });
+
+  it("never admits concurrent durable JSON beyond the ten MiB spool limit", async (t) => {
+    const spoolDir = await fs.mkdtemp(path.join(tmpdir(), "blackbox-quota-test-"));
+    t.after(async () => fs.rm(spoolDir, { recursive: true, force: true }));
+    const recordsDir = path.join(spoolDir, "records");
+    await fs.mkdir(recordsDir, { recursive: true });
+    await fs.mkdir(path.join(spoolDir, "batches"), { recursive: true });
+    const limit = 10 * 1024 * 1024;
+    const prefix = '{"format":"filler"}';
+    await fs.writeFile(path.join(recordsDir, "0000000000000-filler.json"), prefix + " ".repeat(limit - 90_000 - prefix.length));
+    let releaseSink!: () => void;
+    const sinkReleased = new Promise<void>((resolve) => { releaseSink = resolve; });
+    let sinkStarted!: () => void;
+    const firstSink = new Promise<void>((resolve) => { sinkStarted = resolve; });
+    let requestCount = 0;
+    const errors: string[] = [];
+    const logger = diskLogger({
+      spoolDir,
+      onError: (error) => errors.push(String(error)),
+      fetchImpl: (async () => {
+        requestCount += 1;
+        if (requestCount === 1) {
+          sinkStarted();
+          await sinkReleased;
+        }
+        return Response.json({ ok: true });
+      }) as typeof fetch
+    });
+    const writes = [logger("quota-0", { payload: "x".repeat(40_000) })];
+    await firstSink;
+    for (let index = 1; index < 20; index += 1) {
+      writes.push(logger(`quota-${index}`, { payload: "x".repeat(40_000) }));
+    }
+    await waitFor(() => Promise.resolve(errors.some((error) => error.includes("spool_full"))));
+
+    assert.ok(await durableJsonSize(spoolDir) <= limit);
+    releaseSink();
+    await Promise.all(writes);
+    assert.ok(errors.some((error) => error.includes("spool_full")));
+  });
 });
+
+function diskLogger(options: {
+  spoolDir: string;
+  dek?: string;
+  fetchImpl?: typeof fetch;
+  onError?: (error: unknown, event: string) => void;
+}) {
+  const dek = options.dek ?? generateProofLogEncryptionKey();
+  return createBlackboxRemoteLogger({
+    getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG"
+      ? JSON.stringify({
+          sinkId: "sink-disk",
+          jobId: "job-disk",
+          writeUrl: "https://blackbox.test/v1/sinks/sink-disk/events",
+          spoolDir: options.spoolDir,
+          dek
+        })
+      : undefined,
+    spoolMode: "disk",
+    spoolDir: options.spoolDir,
+    signer: {
+      scheme: "Ed25519",
+      publicKeyHex: "a".repeat(64),
+      sign: () => "b".repeat(128)
+    },
+    fetchImpl: options.fetchImpl ?? (async () => Response.json({ ok: true })) as typeof fetch,
+    onError: options.onError
+  });
+}
+
+async function durableJsonSize(spoolDir: string): Promise<number> {
+  let total = 0;
+  for (const subdir of ["records", "batches"]) {
+    const dir = path.join(spoolDir, subdir);
+    for (const file of await fs.readdir(dir).catch(() => [])) {
+      if (!file.endsWith(".json")) continue;
+      total += (await fs.stat(path.join(dir, file))).size;
+    }
+  }
+  return total;
+}
+
+async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) throw new Error("timed out waiting for test condition");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}

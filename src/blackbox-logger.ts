@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { DEFAULT_JOB_ID_ENV_NAMES, acurastEd25519PublicKey } from "./acurast.js";
 import { getRuntimeEnvValue, resolveRuntimeStd, type AcurastRuntimeStd } from "./env.js";
 import { resolveSlipwayHome } from "./home.js";
+import { loadDiskSpoolModules, type DiskSpoolModules } from "./blackbox-spool-internal.js";
 import { encryptProofLogRecord, type ProofLogEncryptedRecord } from "./proof-log-crypto.js";
 import {
   canonicalJson,
@@ -345,7 +346,11 @@ interface BlackboxSpoolChainState {
 class BlackboxSpoolEngine {
   private storage?: SpoolStorage;
   private openPromise?: Promise<void>;
-  private flushing?: Promise<void>;
+  private admissionQueue: Promise<void> = Promise.resolve();
+  private flushWorker?: Promise<void>;
+  private flushRequested = 0;
+  private flushCompleted = 0;
+  private recordOrdinal = 0;
   private state: BlackboxSpoolChainState = { format: SPOOL_STATE_FORMAT, nextSequence: 1, previousHash: null };
   private resolved?: { sinkId: string; jobId: string; writeUrl: string };
 
@@ -355,6 +360,7 @@ class BlackboxSpoolEngine {
   ) {}
 
   async log(event: string, details: Record<string, unknown>): Promise<void> {
+    const recordOrdinal = this.recordOrdinal++;
     try {
       await this.ensureOpen();
       const record: BlackboxLogRecord = {
@@ -366,18 +372,20 @@ class BlackboxSpoolEngine {
       };
       const spoolRecord: BlackboxSpoolRecord = {
         format: SPOOL_RECORD_FORMAT,
-        recordId: `${String(Date.now()).padStart(13, "0")}-${randomBytes(8).toString("hex")}`,
+        recordId: `${String(Date.now()).padStart(13, "0")}-${String(recordOrdinal).padStart(10, "0")}-${randomBytes(8).toString("hex")}`,
         createdAt: new Date().toISOString(),
         encrypted: encryptProofLogRecord(this.config.dek, record)
       };
-      const bytes = Buffer.byteLength(JSON.stringify(spoolRecord), "utf8");
+      const bytes = Buffer.byteLength(`${JSON.stringify(spoolRecord)}\n`, "utf8");
       if (bytes > DEFAULT_BATCH_MAX_BYTES) {
         throw new Error("Blackbox spool rejected record: record_too_large");
       }
-      if ((await this.storage!.sizeBytes()) + bytes > DEFAULT_MAX_SPOOL_BYTES) {
-        throw new Error("Blackbox spool rejected record: spool_full");
-      }
-      await this.storage!.writeRecord(spoolRecord.recordId, spoolRecord);
+      await this.admit(async () => {
+        if ((await this.storage!.sizeBytes()) + bytes > DEFAULT_MAX_SPOOL_BYTES) {
+          throw new Error("Blackbox spool rejected record: spool_full");
+        }
+        await this.storage!.writeRecord(spoolRecord.recordId, spoolRecord);
+      });
     } catch (error) {
       this.options.onError?.(error, event);
       return;
@@ -386,10 +394,28 @@ class BlackboxSpoolEngine {
   }
 
   private async flush(triggerEvent: string): Promise<void> {
-    this.flushing ??= this.flushLoop(triggerEvent).finally(() => {
-      this.flushing = undefined;
+    const request = ++this.flushRequested;
+    this.flushWorker ??= this.runFlushWorker(triggerEvent).finally(() => {
+      this.flushWorker = undefined;
     });
-    await this.flushing;
+    await this.flushWorker;
+    if (this.flushCompleted < request) {
+      await this.flush(triggerEvent);
+    }
+  }
+
+  private async runFlushWorker(triggerEvent: string): Promise<void> {
+    while (this.flushCompleted < this.flushRequested) {
+      const requested = this.flushRequested;
+      await this.flushLoop(triggerEvent);
+      this.flushCompleted = requested;
+    }
+  }
+
+  private async admit<T>(operation: () => Promise<T>): Promise<T> {
+    const admitted = this.admissionQueue.then(operation, operation);
+    this.admissionQueue = admitted.then(() => undefined, () => undefined);
+    return admitted;
   }
 
   private async flushLoop(triggerEvent: string): Promise<void> {
@@ -707,16 +733,6 @@ async function resolveSpoolStorage(mode: "auto" | "disk" | "memory", spoolDir: s
   }
 }
 
-type DiskSpoolModules = {
-  fs: typeof import("node:fs/promises");
-  path: typeof import("node:path");
-};
-
-async function loadDiskSpoolModules(): Promise<DiskSpoolModules> {
-  const [fs, path] = await Promise.all([import("node:fs/promises"), import("node:path")]);
-  return { fs, path: (path as { default?: typeof import("node:path") }).default ?? path };
-}
-
 class DiskSpoolStorage implements SpoolStorage {
   readonly mode = "disk" as const;
   private readonly recordsDir: string;
@@ -811,8 +827,17 @@ class DiskSpoolStorage implements SpoolStorage {
     const { fs, path } = this.modules;
     await fs.mkdir(path.dirname(file), { recursive: true });
     const tmp = `${file}.${randomBytes(6).toString("hex")}.tmp`;
-    await fs.writeFile(tmp, `${JSON.stringify(value)}\n`, "utf8");
-    await fs.rename(tmp, file);
+    try {
+      await fs.writeFile(tmp, `${JSON.stringify(value)}\n`, "utf8");
+      await fs.rename(tmp, file);
+    } catch (error) {
+      try {
+        await fs.rm(tmp, { force: true });
+      } catch {
+        // Preserve the original persistence error.
+      }
+      throw error;
+    }
   }
 
   private async directorySize(dir: string): Promise<number> {
@@ -826,7 +851,14 @@ class DiskSpoolStorage implements SpoolStorage {
       throw error;
     }
     for (const entry of entries) {
-      const info = await fs.stat(path.join(dir, entry));
+      if (!entry.endsWith(".json")) continue;
+      let info;
+      try {
+        info = await fs.stat(path.join(dir, entry));
+      } catch (error) {
+        if (isNotFound(error)) continue;
+        throw error;
+      }
       total += info.isDirectory() ? await this.directorySize(path.join(dir, entry)) : info.size;
     }
     return total;
