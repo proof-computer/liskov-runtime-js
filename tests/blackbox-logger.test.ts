@@ -203,6 +203,97 @@ describe("Blackbox runtime logger", () => {
     assert.equal((JSON.parse(calls[2]!.body) as BlackboxLogBatch).sequenceStart, 2);
   });
 
+  it("resumes a fresh in-memory invocation from the factory's canonical chain head", async () => {
+    const dek = generateProofLogEncryptionKey();
+    const batches: BlackboxLogBatch[] = [];
+    const logger = createBlackboxRemoteLogger({
+      getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG"
+        ? JSON.stringify({
+            factoryToken: "bbx_sf_fac-1_secret",
+            baseUrl: "https://blackbox.test",
+            dek
+          })
+        : undefined,
+      spoolMode: "memory",
+      std: { job: { getId: () => "job-ephemeral" } },
+      signer: {
+        scheme: "Ed25519",
+        publicKeyHex: "a".repeat(64),
+        sign: () => "b".repeat(128)
+      },
+      fetchImpl: (async (url, init) => {
+        if (String(url).endsWith("/job-sinks")) {
+          return Response.json({
+            sinkId: "sink-ephemeral",
+            chain: { nextSequence: 41, previousHash: "0xprevious" }
+          });
+        }
+        batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
+        return new Response(JSON.stringify({ ok: true }), { status: 201 });
+      }) as typeof fetch,
+      onError: (error) => assert.fail(String(error))
+    });
+
+    await logger("after-ephemeral-restart");
+
+    assert.equal(batches.length, 1);
+    assert.equal(batches[0]?.sequenceStart, 41);
+    assert.equal(batches[0]?.sequenceEnd, 41);
+    assert.equal(batches[0]?.previousHash, "0xprevious");
+  });
+
+  it("refreshes the canonical chain head and retries a racing sequence conflict", async () => {
+    const dek = generateProofLogEncryptionKey();
+    let registrations = 0;
+    const batches: BlackboxLogBatch[] = [];
+    const logger = createBlackboxRemoteLogger({
+      getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG"
+        ? JSON.stringify({
+            factoryToken: "bbx_sf_fac-1_secret",
+            baseUrl: "https://blackbox.test",
+            dek
+          })
+        : undefined,
+      spoolMode: "memory",
+      std: { job: { getId: () => "job-race" } },
+      signer: {
+        scheme: "Ed25519",
+        publicKeyHex: "a".repeat(64),
+        sign: () => "b".repeat(128)
+      },
+      fetchImpl: (async (url, init) => {
+        if (String(url).endsWith("/job-sinks")) {
+          registrations += 1;
+          return Response.json({
+            sinkId: "sink-race",
+            chain: registrations === 1
+              ? { nextSequence: 1, previousHash: null }
+              : { nextSequence: 2, previousHash: "0xaccepted-by-racer" }
+          });
+        }
+        batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
+        return batches.length === 1
+          ? new Response(JSON.stringify({
+              ok: false,
+              error: "sequence_conflict",
+              reason: "sequence already exists with a different hash"
+            }), { status: 409 })
+          : new Response(JSON.stringify({ ok: true }), { status: 201 });
+      }) as typeof fetch,
+      onError: (error) => assert.fail(String(error))
+    });
+
+    await logger("racing-event");
+
+    assert.equal(registrations, 2);
+    assert.equal(batches.length, 2);
+    assert.equal(batches[0]?.sequenceStart, 1);
+    assert.equal(batches[1]?.sequenceStart, 2);
+    assert.equal(batches[1]?.previousHash, "0xaccepted-by-racer");
+    assert.notEqual(batches[1]?.batchId, batches[0]?.batchId);
+    assert.deepEqual(batches[1]?.encrypted, batches[0]?.encrypted);
+  });
+
   it("spools records while self-registration fails and flushes them all once the sink exists", async () => {
     const dek = generateProofLogEncryptionKey();
     const env = {

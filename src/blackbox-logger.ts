@@ -39,6 +39,7 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_BATCH_MAX_RECORDS = 50;
 const DEFAULT_BATCH_MAX_BYTES = 256 * 1024;
 const DEFAULT_MAX_SPOOL_BYTES = 10 * 1024 * 1024;
+const MAX_SEQUENCE_REBASE_ATTEMPTS = 3;
 
 /**
  * Runtime Blackbox log config. Two accepted shapes:
@@ -336,6 +337,12 @@ interface BlackboxSpoolChainState {
   jobId?: string;
 }
 
+interface FactorySinkRegistration {
+  sinkId: string;
+  nextSequence: number;
+  previousHash: string | null;
+}
+
 /**
  * Always-on spooling writer (P1.4): records are encrypted and spooled from the
  * first instruction - independent of whether the sink/config/network is usable
@@ -488,14 +495,21 @@ class BlackboxSpoolEngine {
       return this.resolved;
     }
     const jobId = this.requireCurrentJobId();
-    const sinkId = await this.selfRegisterSink(jobId);
+    const registration = await this.selfRegisterSink(jobId);
+    const { sinkId } = registration;
     this.resolved = { sinkId, jobId, writeUrl: this.writeUrlFor(sinkId) };
-    this.state = { ...this.state, sinkId, jobId };
+    this.state = {
+      ...this.state,
+      sinkId,
+      jobId,
+      nextSequence: registration.nextSequence,
+      previousHash: registration.previousHash
+    };
     await this.storage!.writeState(this.state);
     return this.resolved;
   }
 
-  private async selfRegisterSink(jobId: string): Promise<string> {
+  private async selfRegisterSink(jobId: string): Promise<FactorySinkRegistration> {
     const factoryToken = this.config.factoryToken;
     if (!factoryToken) {
       throw new Error(
@@ -534,12 +548,20 @@ class BlackboxSpoolEngine {
     if (!response.ok) {
       throw new Error(`Blackbox sink self-register failed: ${response.status} ${(await response.text()).slice(0, 500)}`);
     }
-    const payload = (await response.json()) as { sink?: { sinkId?: unknown }; sinkId?: unknown };
+    const payload = (await response.json()) as {
+      sink?: { sinkId?: unknown };
+      sinkId?: unknown;
+      chain?: { nextSequence?: unknown; previousHash?: unknown };
+    };
     const sinkId = stringOrUndefined(payload.sink?.sinkId) ?? stringOrUndefined(payload.sinkId);
     if (!sinkId) {
       throw new Error("Blackbox sink self-register response did not include a sinkId");
     }
-    return sinkId;
+    const chain = factoryChainFromPayload(payload.chain);
+    return {
+      sinkId,
+      ...chain
+    };
   }
 
   private async buildPendingBatch(context: { sinkId: string; jobId: string }): Promise<string | undefined> {
@@ -593,28 +615,40 @@ class BlackboxSpoolEngine {
   }
 
   private async sendPendingBatch(file: string, writeUrl: string): Promise<void> {
-    const spoolBatch = await this.storage!.readBatch(file);
+    let spoolBatch = await this.storage!.readBatch(file);
     if (!spoolBatch || spoolBatch.format !== SPOOL_BATCH_FORMAT) {
       await this.storage!.removeBatch(file);
       return;
     }
     const url = new URL(writeUrl);
-    const signed = await createBlackboxSignedJsonRequest({
-      signer: this.options.signer,
-      method: "POST",
-      path: `${url.pathname}${url.search}`,
-      body: spoolBatch.batch,
-      signedAt: this.options.signedAt?.(),
-      nonce: this.options.nonce?.()
-    });
-    const response = await this.options.fetchImpl(url, {
-      method: "POST",
-      headers: signed.headers,
-      body: signed.body,
-      signal: AbortSignal.timeout(Math.max(1, this.options.timeoutMs))
-    });
-    if (!response.ok) {
-      throw new Error(`Blackbox log write failed: ${response.status} ${(await response.text()).slice(0, 500)}`);
+    for (let attempt = 0; ; attempt += 1) {
+      const signed = await createBlackboxSignedJsonRequest({
+        signer: this.options.signer,
+        method: "POST",
+        path: `${url.pathname}${url.search}`,
+        body: spoolBatch.batch,
+        signedAt: this.options.signedAt?.(),
+        nonce: this.options.nonce?.()
+      });
+      const response = await this.options.fetchImpl(url, {
+        method: "POST",
+        headers: signed.headers,
+        body: signed.body,
+        signal: AbortSignal.timeout(Math.max(1, this.options.timeoutMs))
+      });
+      if (response.ok) break;
+
+      const responseBody = (await response.text()).slice(0, 500);
+      if (
+        response.status === 409 &&
+        responseErrorCode(responseBody) === "sequence_conflict" &&
+        this.config.factoryToken &&
+        attempt < MAX_SEQUENCE_REBASE_ATTEMPTS
+      ) {
+        spoolBatch = await this.rebasePendingBatch(file, spoolBatch);
+        continue;
+      }
+      throw new Error(`Blackbox log write failed: ${response.status} ${responseBody}`);
     }
     this.state = {
       format: SPOOL_STATE_FORMAT,
@@ -625,6 +659,45 @@ class BlackboxSpoolEngine {
     };
     await this.storage!.writeState(this.state);
     await this.storage!.removeBatch(file);
+  }
+
+  private async rebasePendingBatch(
+    file: string,
+    spoolBatch: BlackboxSpoolBatch
+  ): Promise<BlackboxSpoolBatch> {
+    const registration = await this.selfRegisterSink(spoolBatch.batch.jobId);
+    if (registration.sinkId !== spoolBatch.batch.sinkId) {
+      throw new Error("Blackbox sequence recovery resolved a different sink");
+    }
+    if (registration.nextSequence <= spoolBatch.batch.sequenceStart) {
+      throw new Error("Blackbox sequence recovery did not advance the server chain head");
+    }
+
+    const { batchId: _batchId, ...existing } = spoolBatch.batch;
+    const sequenceEnd = registration.nextSequence + spoolBatch.batch.encrypted.length - 1;
+    if (!Number.isSafeInteger(sequenceEnd)) {
+      throw new Error("Blackbox sequence recovery exceeded the safe integer range");
+    }
+    const withoutId: BlackboxLogBatch = {
+      ...existing,
+      sequenceStart: registration.nextSequence,
+      sequenceEnd,
+      previousHash: registration.previousHash
+    };
+    const rebased: BlackboxSpoolBatch = {
+      ...spoolBatch,
+      batch: { ...withoutId, batchId: logBatchId(withoutId) }
+    };
+    await this.storage!.writeBatch(file, rebased);
+    this.state = {
+      ...this.state,
+      sinkId: registration.sinkId,
+      jobId: spoolBatch.batch.jobId,
+      nextSequence: registration.nextSequence,
+      previousHash: registration.previousHash
+    };
+    await this.storage!.writeState(this.state);
+    return rebased;
   }
 
   private async oldestPendingBatchFile(): Promise<string | undefined> {
@@ -1073,6 +1146,41 @@ function stringifyRuntimeValue(value: unknown): string | undefined {
 
 function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function positiveSafeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+function factoryChainFromPayload(value: unknown): Pick<FactorySinkRegistration, "nextSequence" | "previousHash"> {
+  // Older logging services did not return a chain head. Preserve compatibility
+  // for a brand-new sink; a later 409 still fails closed rather than guessing.
+  if (value === undefined) return { nextSequence: 1, previousHash: null };
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Blackbox sink self-register response included an invalid chain head");
+  }
+  const chain = value as { nextSequence?: unknown; previousHash?: unknown };
+  const nextSequence = positiveSafeInteger(chain.nextSequence);
+  if (!nextSequence) {
+    throw new Error("Blackbox sink self-register chain nextSequence must be a positive safe integer");
+  }
+  if (chain.previousHash !== null && chain.previousHash !== undefined && !stringOrUndefined(chain.previousHash)) {
+    throw new Error("Blackbox sink self-register chain previousHash must be a non-empty string or null");
+  }
+  const previousHash = stringOrUndefined(chain.previousHash) ?? null;
+  if ((nextSequence === 1) !== (previousHash === null)) {
+    throw new Error("Blackbox sink self-register chain head is internally inconsistent");
+  }
+  return { nextSequence, previousHash };
+}
+
+function responseErrorCode(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown };
+    return stringOrUndefined(parsed.error);
+  } catch {
+    return undefined;
+  }
 }
 
 function withoutUndefined<T extends Record<string, unknown>>(value: T): T {

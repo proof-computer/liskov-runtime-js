@@ -300,7 +300,10 @@ runtime logs intentionally.
 Accepted config shapes:
 
 - Factory token: `factoryToken` + `baseUrl` + `dek`. This is the product
-  target. The writer self-registers the job-bound sink on first flush.
+  target. The writer self-registers the job-bound sink on first flush and
+  resumes from the server's canonical sequence head. This keeps logging
+  contiguous when a later Acurast invocation starts without the previous
+  invocation's local spool state.
 - Pre-bound sink: `sinkId` + `jobId` + `writeUrl` + `dek`. This remains
   accepted for internal and legacy jobs.
 
@@ -313,6 +316,11 @@ $SLIPWAY_HOME/logging/spool
 ```
 
 When disk spool is unavailable in `auto` mode, the writer falls back to memory.
+If another writer advances the same factory sink between registration and
+upload, the runtime refreshes the canonical head and retries the encrypted
+pending batch with a bounded sequence rebase. The encrypted records themselves
+are unchanged. Invalid or inconsistent recovery responses fail closed through
+`logging.onError`.
 Unknown config shapes report through diagnostics and `logging.onError`; they do
 not silently degrade to a no-op.
 
