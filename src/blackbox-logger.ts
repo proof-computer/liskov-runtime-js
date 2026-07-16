@@ -480,6 +480,7 @@ class BlackboxSpoolEngine {
       this.state.sinkId !== undefined && this.config.sinkId !== undefined && this.state.sinkId !== this.config.sinkId;
     const jobChanged =
       this.state.jobId !== undefined && currentJobId !== undefined && this.state.jobId !== currentJobId;
+    let pendingIdentityChanged = false;
     if (sinkChanged || jobChanged) {
       // The persisted chain belongs to another job/sink generation. Its pending
       // batches can never be accepted under this writer; drop them and restart
@@ -488,6 +489,25 @@ class BlackboxSpoolEngine {
       for (const file of await this.storage.batchFiles()) {
         await this.storage.removeBatch(file);
       }
+    } else {
+      // State written before sink/job identity was persisted can still have a
+      // claimed batch for an older generation. Inspect the batch itself so a
+      // legacy state file cannot make a fresh job replay another job's batch.
+      // Matching pending batches stay intact for accepted-response-lost replay.
+      for (const file of await this.storage.batchFiles()) {
+        const pending = await this.storage.readBatch(file);
+        if (!pending || pending.format !== SPOOL_BATCH_FORMAT) continue;
+        const pendingSinkChanged =
+          this.config.sinkId !== undefined && pending.batch.sinkId !== this.config.sinkId;
+        const pendingJobChanged =
+          currentJobId !== undefined && pending.batch.jobId !== currentJobId;
+        if (pendingSinkChanged || pendingJobChanged) {
+          await this.storage.removeBatch(file);
+          pendingIdentityChanged = true;
+        }
+      }
+    }
+    if (sinkChanged || jobChanged || pendingIdentityChanged) {
       this.state = { format: SPOOL_STATE_FORMAT, nextSequence: 1, previousHash: null };
       await this.storage.writeState(this.state);
     }

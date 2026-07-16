@@ -695,6 +695,69 @@ describe("Blackbox runtime logger", () => {
     ]);
   });
 
+  it("drops a stale pending batch when legacy state has no persisted identity", async (t) => {
+    const spoolDir = await fs.mkdtemp(path.join(tmpdir(), "blackbox-legacy-job-reset-test-"));
+    t.after(async () => fs.rm(spoolDir, { recursive: true, force: true }));
+    const dek = generateProofLogEncryptionKey();
+    const errors: string[] = [];
+    const config = (sinkId: string, jobId: string) => JSON.stringify({
+      sinkId,
+      jobId,
+      writeUrl: `https://blackbox.test/v1/sinks/${sinkId}/events`,
+      spoolDir,
+      dek
+    });
+    const signer = {
+      scheme: "Ed25519" as const,
+      publicKeyHex: "a".repeat(64),
+      sign: () => "b".repeat(128)
+    };
+
+    const oldLogger = createBlackboxRemoteLogger({
+      getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG" ? config("sink-old", "job-old") : undefined,
+      spoolMode: "disk",
+      spoolDir,
+      signer,
+      fetchImpl: (async (url) => String(url).endsWith("/resume")
+        ? resumeResponse("sink-old", { nextSequence: 1, previousHash: null })
+        : new Response(JSON.stringify({ ok: false, error: "unavailable" }), { status: 503 })) as typeof fetch,
+      onError: (error) => errors.push(String(error))
+    });
+    await oldLogger("old-job-record");
+    assert.equal((await fs.readdir(path.join(spoolDir, "batches"))).length, 1);
+    assert.ok(errors.some((error) => error.includes("503")));
+
+    const legacyState = JSON.parse(await fs.readFile(path.join(spoolDir, "state.json"), "utf8")) as Record<string, unknown>;
+    delete legacyState.sinkId;
+    delete legacyState.jobId;
+    await fs.writeFile(path.join(spoolDir, "state.json"), `${JSON.stringify(legacyState)}\n`, "utf8");
+
+    const accepted: BlackboxLogBatch[] = [];
+    const newLogger = createBlackboxRemoteLogger({
+      getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG" ? config("sink-new", "job-new") : undefined,
+      spoolMode: "disk",
+      spoolDir,
+      signer,
+      fetchImpl: (async (url, init) => {
+        if (String(url).endsWith("/resume")) {
+          return resumeResponse("sink-new", { nextSequence: 1, previousHash: null });
+        }
+        accepted.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
+        return acceptedBatchResponse(init);
+      }) as typeof fetch,
+      onError: (error) => assert.fail(String(error))
+    });
+    await newLogger("new-job-record");
+
+    assert.equal(accepted.length, 1);
+    assert.deepEqual(
+      [accepted[0]?.sinkId, accepted[0]?.jobId, accepted[0]?.sequenceStart],
+      ["sink-new", "job-new", 1]
+    );
+    assert.equal(decryptProofLogRecord<{ event: string }>(dek, accepted[0]!.encrypted[0]!).event, "new-job-record");
+    assert.deepEqual(await fs.readdir(path.join(spoolDir, "batches")), []);
+  });
+
   it("fails loudly on an unrecognized config shape instead of degrading to a silent no-op", async () => {
     const errors: string[] = [];
     const logger = createBlackboxRemoteLogger({
