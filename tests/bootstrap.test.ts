@@ -942,6 +942,11 @@ describe("top-level Slipway runtime bootstrap", () => {
 
       assert.equal(calls[1]?.url, "https://logging.slipway.proof.computer/v1/sinks/sink-job-777/events");
       const batch = JSON.parse(calls[1]!.body) as BlackboxLogBatch;
+      assert.notEqual(batch.writerPublicKey, "a".repeat(64));
+      assert.match(
+        calls[0]?.headers.authorization ?? "",
+        new RegExp(`^Ed25519 ${batch.writerPublicKey}:`, "u")
+      );
       const record = decryptProofLogRecord<Record<string, unknown>>(dek, batch.encrypted[0]!);
       const details = record.details as { ok?: boolean; _slipwayRuntime?: { severity?: string; labels?: Record<string, string> } };
       assert.equal(record.event, "diagnostic.boot");

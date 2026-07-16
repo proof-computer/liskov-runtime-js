@@ -69,7 +69,7 @@ export interface BlackboxRuntimeLogConfig {
   /** Signed canonical-chain discovery URL for the resolved sink. */
   resumeUrl?: string;
   dek: string;
-  /** Opt-in stable request writer derived from the protected DEK. */
+  /** Stable request-writer derivation. Omitted configs use this v1 derivation by default. */
   writerKeyDerivation?: typeof BLACKBOX_WRITER_KEY_DERIVATION;
   /** Sink-factory token (`bbx_sf_<factoryId>_<secret>`). */
   factoryToken?: string;
@@ -232,9 +232,9 @@ export function createBlackboxRemoteLogger(
 
   let signer: BlackboxRequestSigner | undefined;
   try {
-    signer = config.writerKeyDerivation === BLACKBOX_WRITER_KEY_DERIVATION
+    signer = config.writerKeyDerivation === BLACKBOX_WRITER_KEY_DERIVATION || options.signer === undefined
       ? deriveBlackboxRequestSigner(config.dek)
-      : options.signer ?? maybeAcurastBlackboxRequestSigner(options.std);
+      : options.signer;
   } catch (error) {
     return async (event) => options.onError?.(error, event);
   }

@@ -22,7 +22,7 @@ import {
 } from "../src/blackbox-spool-internal.js";
 
 describe("Blackbox runtime logger", () => {
-  it("derives one deterministic writer across fresh pre-bound invocations", async () => {
+  it("derives one deterministic writer by default across fresh pre-bound invocations", async () => {
     const dek = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
     const writerPublicKey = "ea7aeb9077ce16b49ac40b454b033109f142b1c0bc3ae31338e75ebc42cef592";
     const signingMessage = [
@@ -40,8 +40,7 @@ describe("Blackbox runtime logger", () => {
             sinkId: "sink-stable",
             jobId: "job-stable",
             writeUrl: "https://blackbox.test/v1/sinks/sink-stable/events",
-            dek,
-            writerKeyDerivation: BLACKBOX_WRITER_KEY_DERIVATION
+            dek
           })
         : undefined,
       spoolMode: "memory",

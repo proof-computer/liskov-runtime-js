@@ -9,7 +9,6 @@ import {
   blackboxLogHostnames,
   blackboxLogConfigFingerprint,
   createBlackboxRemoteLogger,
-  maybeAcurastBlackboxRequestSigner,
   readBlackboxLogConfig,
   type BlackboxLogRecord
 } from "./blackbox-logger.js";
@@ -915,23 +914,10 @@ function createSlipwayRuntimeLoggingController(input: {
       return;
     }
 
-    let signer: ReturnType<typeof maybeAcurastBlackboxRequestSigner>;
-    try {
-      signer = maybeAcurastBlackboxRequestSigner(input.std);
-    } catch (error) {
-      recordAttachError("slipway_logging_attach_failed", error);
-      return;
-    }
-    if (!signer) {
-      recordAttachError("slipway_logging_attach_failed", new Error("Slipway logging requires the Acurast Ed25519 runtime signer"));
-      return;
-    }
-
     try {
       await input.allowHostnames(blackboxLogHostnames(getConfigValue));
       logger = createBlackboxRemoteLogger({
         getConfigValue,
-        signer,
         fetchImpl: input.fetchImpl,
         timeoutMs: input.timeoutMs,
         std: input.std,
