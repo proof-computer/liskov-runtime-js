@@ -348,6 +348,10 @@ export async function bootstrapSlipwayRuntime(
   let refreshHandle: SlipwayRuntimeEnvRefreshHandle | undefined;
   let runtimeHealthHandle: SlipwayRuntimeHealthHandle | undefined;
   let runtimeEnv: SlipwayRuntimeEnvLoadResult | undefined;
+  let managedLoggingConfigReady = !(
+    lockboxConfig?.overwriteEnv === true &&
+    lockboxConfig.requestedSecretIds.includes("blackbox-log-config")
+  );
   const logging = createSlipwayRuntimeLoggingController({
     env,
     std,
@@ -363,6 +367,7 @@ export async function bootstrapSlipwayRuntime(
     onError: options.logging?.onError,
     diagnostics,
     allowHostnames: (hostnames) => allowBootstrapHostnames(std, hostnames),
+    canAttach: () => managedLoggingConfigReady,
     baseRecord: () => compactRuntimeRecord({
       applicationId: options.appId ?? runtimeEnv?.response.applicationId ?? slipwayConfig?.applicationId ?? lockboxConfig?.applicationId,
       deploymentId: runtimeEnv?.response.deploymentId ?? slipwayConfig?.deploymentId ?? lockboxConfig?.deploymentId,
@@ -393,6 +398,7 @@ export async function bootstrapSlipwayRuntime(
     setTimeoutImpl: options.setTimeoutImpl,
     clearTimeoutImpl: options.clearTimeoutImpl,
     onLoaded: async () => {
+      managedLoggingConfigReady = true;
       await logging.refresh();
     }
   });
@@ -854,6 +860,7 @@ function createSlipwayRuntimeLoggingController(input: {
   onError?: (error: unknown, event: string) => void;
   diagnostics: { emit(event: Omit<SlipwayRuntimeDiagnostic, "sequence" | "timestampMs">): Promise<void> };
   allowHostnames(hostnames: string[]): Promise<void>;
+  canAttach?: () => boolean;
   baseRecord?: () => Record<string, unknown>;
 }): SlipwayRuntimeLoggingController {
   const getConfigValue = (name: string) => input.env[name];
@@ -879,6 +886,14 @@ function createSlipwayRuntimeLoggingController(input: {
   }
 
   async function refreshOnce(): Promise<number> {
+    if (input.canAttach?.() === false) {
+      logger = undefined;
+      attachedFingerprint = undefined;
+      attachErrorCode = undefined;
+      attachErrorMessage = undefined;
+      writeErrorMessage = undefined;
+      return 0;
+    }
     const fingerprint = currentFingerprint();
     if (!fingerprint) {
       logger = undefined;

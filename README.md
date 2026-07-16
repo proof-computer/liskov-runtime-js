@@ -265,8 +265,12 @@ bootstrap values.
 
 ### Installation Rules
 
-Env secrets are installed into runtime env by name. Existing env values are not
-overwritten unless `PROOF_LOCKBOX_OVERWRITE_ENV=true` is set.
+Env secrets are installed into runtime env by name. An authenticated signed
+bootstrap is authoritative for its current job and replaces ambient values
+left by a reused runtime. Legacy env-provided bootstrap keeps existing values
+unless `PROOF_LOCKBOX_OVERWRITE_ENV=true` is set. When a signed grant owns
+`blackbox-log-config`, logging buffers until that current config is installed;
+it never attaches an older job's ambient sink config.
 
 File secrets require `PROOF_LOCKBOX_FILE_BASE_DIR` or the compact bootstrap
 file-base field. File targets are written below that directory with mode

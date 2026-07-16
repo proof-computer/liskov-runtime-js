@@ -360,7 +360,11 @@ export async function loadLiskovSecretBootstrap(
       requestedSecretIds: response.requestedSecretIds,
       allowInsecureHttp,
       requestTtlMs,
-      fileBaseDir: response.fileBaseDir
+      fileBaseDir: response.fileBaseDir,
+      // A signed bootstrap is bound to the current job + grant. Any existing
+      // value can only be ambient process state (including state retained by a
+      // reused Acurast runtime), so the authenticated grant must replace it.
+      overwriteEnv: true
     }
   };
 }

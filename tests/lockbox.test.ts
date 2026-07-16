@@ -123,6 +123,26 @@ describe("Lockbox runtime secrets", () => {
     }), /escapes/u);
   });
 
+  it("only replaces existing env secrets when the authenticated config allows it", async () => {
+    const payload = parseLockboxPlaintextPayload(plaintextPayload([
+      { secretId: "api-token", name: "API_TOKEN", value: "current-secret" }
+    ]));
+    const preserved = { API_TOKEN: "ambient-secret" };
+    const skipped = await installLockboxRuntimeSecrets({ payload, env: preserved });
+    assert.equal(preserved.API_TOKEN, "ambient-secret");
+    assert.equal(skipped.skippedExistingEnv[0]?.name, "API_TOKEN");
+
+    const replaced = { API_TOKEN: "ambient-secret" };
+    const installed = await installLockboxRuntimeSecrets({
+      payload,
+      env: replaced,
+      overwriteEnv: true
+    });
+    assert.equal(replaced.API_TOKEN, "current-secret");
+    assert.equal(installed.env[0]?.name, "API_TOKEN");
+    assert.deepEqual(installed.skippedExistingEnv, []);
+  });
+
   it("fails closed on plaintext digest and binding mismatches", async () => {
     const request = await buildLockboxRuntimeJobSecretRequest({
       identityProvider: fakeIdentityProvider(),

@@ -246,6 +246,107 @@ describe("top-level Slipway runtime bootstrap", () => {
     }
   });
 
+  it("replaces stale cross-job Blackbox config before background logging attaches", async () => {
+    const staleDek = generateProofLogEncryptionKey();
+    const currentDek = generateProofLogEncryptionKey();
+    const currentConfig = JSON.stringify({
+      sinkId: "sink-current",
+      jobId: "job-1",
+      writeUrl: "https://logging.slipway.proof.computer/v1/sinks/sink-current/events",
+      resumeUrl: "https://logging.slipway.proof.computer/v1/sinks/sink-current/resume",
+      dek: currentDek
+    });
+    const payload = plaintextPayload([{
+      secretId: "blackbox-log-config",
+      versionId: "version-blackbox-current",
+      target: "env",
+      name: "BLACKBOX_LOG_CONFIG",
+      required: true,
+      bundleId: "blackbox-log-config",
+      value: currentConfig
+    }]);
+    const env: Record<string, string | undefined> = {
+      BLACKBOX_LOG_CONFIG: JSON.stringify({
+        sinkId: "sink-stale",
+        jobId: "job-stale",
+        writeUrl: "https://logging.slipway.proof.computer/v1/sinks/sink-stale/events",
+        resumeUrl: "https://logging.slipway.proof.computer/v1/sinks/sink-stale/resume",
+        dek: staleDek
+      })
+    };
+    const timers: Array<{ delayMs?: number; callback: () => void }> = [];
+    const loggingPaths: string[] = [];
+    const batches: BlackboxLogBatch[] = [];
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      bootstrap: {
+        coreUrl: "https://liskov.test",
+        secretsUrl: "https://secrets.liskov.test"
+      },
+      secrets: {
+        mode: "background",
+        retry: { intervalMs: 25, maxAttempts: 2, maxElapsedMs: 1_000 }
+      },
+      logging: { mode: "background", spoolMode: "memory" },
+      identityProvider: fakeIdentityProvider(payload),
+      nowMs: () => 1_000,
+      randomBytes: (size) => new Uint8Array(size).fill(7),
+      setTimeoutImpl: (((callback: () => void, delayMs?: number) => {
+        timers.push({ delayMs, callback });
+        return { unref() {} };
+      }) as unknown) as typeof setTimeout,
+      fetchImpl: (async (url, init) => {
+        const parsed = new URL(String(url));
+        if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
+          return jsonResponse(liskovRuntimeBootstrapResponse());
+        }
+        if (parsed.pathname === "/api/jobs/secret-bootstrap") {
+          return jsonResponse(liskovSecretBootstrapResponse(["blackbox-log-config"]));
+        }
+        if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse());
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") return jsonResponse({ ok: true });
+        if (parsed.pathname === "/api/jobs/secret-requests") {
+          const request = JSON.parse(String(init?.body)) as { requestedSecretIds: string[] };
+          return jsonResponse(lockboxResponse(request, payload));
+        }
+        loggingPaths.push(parsed.pathname);
+        if (parsed.pathname.endsWith("/resume")) {
+          return jsonResponse({
+            ok: true,
+            sinkId: "sink-current",
+            chain: { nextSequence: 1, previousHash: null }
+          });
+        }
+        batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
+        return blackboxWriteResponse(init);
+      }) as typeof fetch
+    });
+    try {
+      await handle.log("before-current-grant");
+      assert.deepEqual(loggingPaths, [], "does not attach the ambient stale config");
+
+      const backgroundLoad = timers.find((timer) => timer.delayMs === 0);
+      assert.ok(backgroundLoad);
+      backgroundLoad.callback();
+      await flushAsyncWork();
+      await flushAsyncWork();
+
+      assert.equal(env.BLACKBOX_LOG_CONFIG, currentConfig);
+      assert.deepEqual(loggingPaths, [
+        "/v1/sinks/sink-current/resume",
+        "/v1/sinks/sink-current/events"
+      ]);
+      assert.equal(batches[0]?.sinkId, "sink-current");
+      assert.equal(batches[0]?.jobId, "job-1");
+      assert.equal(
+        decryptProofLogRecord<Record<string, unknown>>(currentDek, batches[0]!.encrypted[0]!).event,
+        "before-current-grant"
+      );
+    } finally {
+      handle.stop();
+    }
+  });
+
   it("does not touch legacy environment lookup before signed bootstrap", async () => {
     const env: Record<string, string | undefined> = {};
     const order: string[] = [];
@@ -1500,7 +1601,9 @@ function liskovRuntimeBootstrapResponse(): Record<string, unknown> {
   };
 }
 
-function liskovSecretBootstrapResponse(): Record<string, unknown> {
+function liskovSecretBootstrapResponse(
+  requestedSecretIds: string[] = ["api-token"]
+): Record<string, unknown> {
   return {
     ok: true,
     domain: "proof.liskov.secret-bootstrap-response.v1",
@@ -1511,7 +1614,7 @@ function liskovSecretBootstrapResponse(): Record<string, unknown> {
     deploymentId: "42",
     jobId: "job-1",
     processorId: "processor-1",
-    requestedSecretIds: ["api-token"],
+    requestedSecretIds,
     fileBaseDir: "./.slipway-lockbox"
   };
 }
