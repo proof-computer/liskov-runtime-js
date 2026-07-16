@@ -514,7 +514,7 @@ class BlackboxSpoolEngine {
       try {
         batchFile = (await this.oldestPendingBatchFile()) ?? (await this.buildPendingBatch(context));
         if (!batchFile) return;
-        await this.sendPendingBatch(batchFile, context.writeUrl);
+        await this.sendPendingBatch(batchFile, context);
       } catch (error) {
         this.options.onError?.(error, triggerEvent);
         return;
@@ -642,7 +642,10 @@ class BlackboxSpoolEngine {
     return chainFromPayload(payload.chain, "Blackbox sink resume response");
   }
 
-  private async selfRegisterSink(jobId: string): Promise<FactorySinkRegistration> {
+  private async selfRegisterSink(
+    jobId: string,
+    retryBodylessSuccess = true
+  ): Promise<FactorySinkRegistration> {
     const factoryToken = this.config.factoryToken;
     if (!factoryToken) {
       throw new Error(
@@ -678,32 +681,43 @@ class BlackboxSpoolEngine {
       body: signed.body,
       signal: AbortSignal.timeout(Math.max(1, this.options.timeoutMs))
     });
+    const responseBody = (await response.text()).slice(0, 500);
     if (!response.ok) {
-      throw new Error(`Blackbox sink self-register failed: ${response.status} ${(await response.text()).slice(0, 500)}`);
+      throw new Error(`Blackbox sink self-register failed: ${response.status} ${responseBody}`);
     }
-    const payload = (await response.json()) as {
+    let payload: Record<string, unknown>;
+    try {
+      payload = parseJsonResponse(responseBody, "Blackbox sink self-register response");
+    } catch (error) {
+      // Acurast's httpPOST bridge can discard the response body for a successful
+      // 201 while still reporting success. Registration is idempotent, so replay
+      // once: the now-existing sink returns 200 and its authoritative URLs/head.
+      if (retryBodylessSuccess) return this.selfRegisterSink(jobId, false);
+      throw error;
+    }
+    const registration = payload as {
       sink?: { sinkId?: unknown; writeUrl?: unknown; resumeUrl?: unknown };
       sinkId?: unknown;
       writeUrl?: unknown;
       resumeUrl?: unknown;
       chain?: { nextSequence?: unknown; previousHash?: unknown };
     };
-    const sinkId = stringOrUndefined(payload.sink?.sinkId) ?? stringOrUndefined(payload.sinkId);
+    const sinkId = stringOrUndefined(registration.sink?.sinkId) ?? stringOrUndefined(registration.sinkId);
     if (!sinkId) {
       throw new Error("Blackbox sink self-register response did not include a sinkId");
     }
-    const writeUrl = stringOrUndefined(payload.sink?.writeUrl)
-      ?? stringOrUndefined(payload.writeUrl)
+    const writeUrl = stringOrUndefined(registration.sink?.writeUrl)
+      ?? stringOrUndefined(registration.writeUrl)
       ?? this.writeUrlFor(sinkId);
-    const resumeUrl = stringOrUndefined(payload.sink?.resumeUrl)
-      ?? stringOrUndefined(payload.resumeUrl)
+    const resumeUrl = stringOrUndefined(registration.sink?.resumeUrl)
+      ?? stringOrUndefined(registration.resumeUrl)
       ?? deriveResumeUrl(writeUrl);
     if (!resumeUrl) {
       throw new Error("Blackbox sink self-register response did not include a resumable sink URL");
     }
     validateHttpUrl(writeUrl, "Blackbox sink self-register writeUrl");
     validateHttpUrl(resumeUrl, "Blackbox sink self-register resumeUrl");
-    const chain = chainFromPayload(payload.chain, "Blackbox sink self-register response");
+    const chain = chainFromPayload(registration.chain, "Blackbox sink self-register response");
     return {
       sinkId,
       writeUrl,
@@ -762,13 +776,13 @@ class BlackboxSpoolEngine {
     };
   }
 
-  private async sendPendingBatch(file: string, writeUrl: string): Promise<void> {
+  private async sendPendingBatch(file: string, context: ResolvedSinkContext): Promise<void> {
     let spoolBatch = await this.storage!.readBatch(file);
     if (!spoolBatch || spoolBatch.format !== SPOOL_BATCH_FORMAT) {
       await this.storage!.removeBatch(file);
       return;
     }
-    const url = new URL(writeUrl);
+    const url = new URL(context.writeUrl);
     for (let attempt = 0; ; attempt += 1) {
       const signed = await createBlackboxSignedJsonRequest({
         signer: this.options.signer,
@@ -786,8 +800,17 @@ class BlackboxSpoolEngine {
       });
       const responseBody = (await response.text()).slice(0, 500);
       if (response.ok) {
-        const payload = parseJsonResponse(responseBody, "Blackbox log write response");
-        const chain = chainFromPayload(payload.chain, "Blackbox log write response");
+        let chain: BlackboxChain;
+        try {
+          const payload = parseJsonResponse(responseBody, "Blackbox log write response");
+          chain = chainFromPayload(payload.chain, "Blackbox log write response");
+        } catch {
+          // Acurast's httpPOST callback can report a successful 201 without its
+          // JSON body. Resolve the committed server head instead of deriving it
+          // locally. If this read fails or is stale, the original batch remains
+          // spooled and will be replayed exactly on the next flush.
+          chain = await this.resumeSink(context);
+        }
         if (chain.nextSequence <= spoolBatch.batch.sequenceEnd) {
           throw new Error("Blackbox log write response returned a chain behind the accepted batch");
         }

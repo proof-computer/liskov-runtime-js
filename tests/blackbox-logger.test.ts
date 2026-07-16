@@ -419,6 +419,101 @@ describe("Blackbox runtime logger", () => {
     assert.equal(batches[0]?.previousHash, chainHash("2"));
   });
 
+  it("resolves the committed head when Acurast drops a successful write body", async () => {
+    const dek = generateProofLogEncryptionKey();
+    const batches: BlackboxLogBatch[] = [];
+    const resumeHeads: Array<{ nextSequence: number; previousHash: string | null }> = [
+      { nextSequence: 1, previousHash: null }
+    ];
+    const errors: string[] = [];
+    const logger = createBlackboxRemoteLogger({
+      getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG"
+        ? JSON.stringify({
+            sinkId: "sink-bodyless-write",
+            jobId: "job-bodyless-write",
+            writeUrl: "https://blackbox.test/v1/sinks/sink-bodyless-write/events",
+            resumeUrl: "https://blackbox.test/v1/sinks/sink-bodyless-write/resume",
+            dek
+          })
+        : undefined,
+      spoolMode: "memory",
+      signer: {
+        scheme: "Ed25519",
+        publicKeyHex: "a".repeat(64),
+        sign: () => "b".repeat(128)
+      },
+      fetchImpl: (async (url, init) => {
+        if (String(url).endsWith("/resume")) {
+          const head = resumeHeads.at(-1)!;
+          return resumeResponse("sink-bodyless-write", head);
+        }
+        const batch = JSON.parse(String(init?.body)) as BlackboxLogBatch;
+        batches.push(batch);
+        resumeHeads.push({
+          nextSequence: batch.sequenceEnd + 1,
+          previousHash: batch.batchId ?? null
+        });
+        return new Response("undefined", { status: 200 });
+      }) as typeof fetch,
+      onError: (error) => errors.push(String(error))
+    });
+
+    await logger("first-bodyless-success");
+    await logger("second-bodyless-success");
+
+    assert.deepEqual(errors, []);
+    assert.equal(batches.length, 2);
+    assert.equal(batches[0]?.sequenceStart, 1);
+    assert.equal(batches[1]?.sequenceStart, 2);
+    assert.equal(batches[1]?.previousHash, batches[0]?.batchId);
+    assert.equal(resumeHeads.length, 3);
+  });
+
+  it("replays factory registration once when Acurast drops the created response body", async () => {
+    const dek = generateProofLogEncryptionKey();
+    let registrations = 0;
+    const batches: BlackboxLogBatch[] = [];
+    const errors: string[] = [];
+    const logger = createBlackboxRemoteLogger({
+      getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG"
+        ? JSON.stringify({
+            factoryToken: "bbx_sf_fac-bodyless_secret",
+            baseUrl: "https://blackbox.test",
+            dek
+          })
+        : undefined,
+      spoolMode: "memory",
+      std: { job: { getId: () => "job-bodyless-registration" } },
+      signer: {
+        scheme: "Ed25519",
+        publicKeyHex: "a".repeat(64),
+        sign: () => "b".repeat(128)
+      },
+      fetchImpl: (async (url, init) => {
+        if (String(url).endsWith("/job-sinks")) {
+          registrations += 1;
+          if (registrations === 1) return new Response("undefined", { status: 200 });
+          return Response.json({
+            sinkId: "sink-bodyless-registration",
+            writeUrl: "https://blackbox.test/v1/sinks/sink-bodyless-registration/events",
+            resumeUrl: "https://blackbox.test/v1/sinks/sink-bodyless-registration/resume",
+            chain: { nextSequence: 1, previousHash: null }
+          });
+        }
+        batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
+        return acceptedBatchResponse(init, 200);
+      }) as typeof fetch,
+      onError: (error) => errors.push(String(error))
+    });
+
+    await logger("after-bodyless-registration");
+
+    assert.deepEqual(errors, []);
+    assert.equal(registrations, 2);
+    assert.equal(batches.length, 1);
+    assert.equal(batches[0]?.sinkId, "sink-bodyless-registration");
+  });
+
   it("consumes a conflict head and retries a racing sequence conflict", async () => {
     const dek = generateProofLogEncryptionKey();
     let registrations = 0;

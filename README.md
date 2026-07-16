@@ -314,6 +314,10 @@ Both shapes can be supplied as `BLACKBOX_LOG_CONFIG` JSON or expanded
 `BLACKBOX_*` env values. Records are encrypted locally before upload and
 posted batches contain no plaintext log messages. Disk spool state defaults to:
 
+```text
+$SLIPWAY_HOME/logging/spool
+```
+
 Every config defaults to the `hkdf-sha256-ed25519-v1` writer derivation; newly
 provisioned configs also record that value explicitly as `writerKeyDerivation`.
 Every invocation therefore derives the same Ed25519 request writer from the
@@ -324,10 +328,6 @@ canonical append chain while separating the writer key from record encryption.
 Low-level callers can still supply an explicit signer for an unmarked config;
 the managed runtime does not use that compatibility override.
 
-```text
-$SLIPWAY_HOME/logging/spool
-```
-
 When disk spool is unavailable in `auto` mode, the writer falls back to memory.
 Before constructing a new batch, the runtime resolves the server's canonical
 head in either provisioning mode. If another writer advances the sink between
@@ -335,7 +335,11 @@ that resolution and upload, the runtime consumes the conflict response's head
 and retries the encrypted pending batch with at most three sequence rebases.
 The encrypted records themselves are unchanged. Invalid or inconsistent
 resume, success, or conflict heads fail closed through `logging.onError` while
-the spool remains intact.
+the spool remains intact. Some Acurast runtimes omit the body of a successful
+`201` callback: after an accepted write the SDK resolves the signed server head,
+and after a created factory registration it performs one idempotent replay.
+Both paths keep the server authoritative and leave the spool intact if the
+follow-up cannot prove the committed position.
 Unknown config shapes report through diagnostics and `logging.onError`; they do
 not silently degrade to a no-op.
 
