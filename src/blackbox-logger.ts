@@ -1,5 +1,11 @@
 import { Buffer } from "node:buffer";
-import { randomBytes } from "node:crypto";
+import {
+  createPrivateKey,
+  createPublicKey,
+  hkdfSync,
+  randomBytes,
+  sign as signEd25519
+} from "node:crypto";
 
 import { DEFAULT_JOB_ID_ENV_NAMES, acurastEd25519PublicKey } from "./acurast.js";
 import { getRuntimeEnvValue, resolveRuntimeStd, type AcurastRuntimeStd } from "./env.js";
@@ -41,6 +47,11 @@ const DEFAULT_BATCH_MAX_RECORDS = 50;
 const DEFAULT_BATCH_MAX_BYTES = 256 * 1024;
 const DEFAULT_MAX_SPOOL_BYTES = 10 * 1024 * 1024;
 const MAX_SEQUENCE_REBASE_ATTEMPTS = 3;
+export const BLACKBOX_WRITER_KEY_DERIVATION = "hkdf-sha256-ed25519-v1" as const;
+const BLACKBOX_WRITER_KEY_DERIVATION_SALT = "proof.liskov.blackbox.writer-key.v1";
+const BLACKBOX_WRITER_KEY_DERIVATION_INFO = "Ed25519";
+const ED25519_PKCS8_SEED_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
+const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
 /**
  * Runtime Blackbox log config. Two accepted shapes:
@@ -58,6 +69,8 @@ export interface BlackboxRuntimeLogConfig {
   /** Signed canonical-chain discovery URL for the resolved sink. */
   resumeUrl?: string;
   dek: string;
+  /** Opt-in stable request writer derived from the protected DEK. */
+  writerKeyDerivation?: typeof BLACKBOX_WRITER_KEY_DERIVATION;
   /** Sink-factory token (`bbx_sf_<factoryId>_<secret>`). */
   factoryToken?: string;
   /** Factory id; parsed from the token when omitted. */
@@ -129,6 +142,7 @@ export function readBlackboxLogConfig(
       writeUrl: stringField(parsed, "writeUrl") ?? stringField(parsed, "url"),
       resumeUrl: stringField(parsed, "resumeUrl"),
       dek: stringField(parsed, "dek") ?? stringField(parsed, "k") ?? stringField(parsed, "logDek"),
+      writerKeyDerivation: stringField(parsed, "writerKeyDerivation") ?? stringField(parsed, "wkd"),
       factoryToken: stringField(parsed, "factoryToken") ?? stringField(parsed, "ft"),
       factoryId: stringField(parsed, "factoryId") ?? stringField(parsed, "fid"),
       baseUrl: stringField(parsed, "baseUrl") ?? stringField(parsed, "base"),
@@ -216,7 +230,14 @@ export function createBlackboxRemoteLogger(
   }
   if (!config) return async () => undefined;
 
-  const signer = options.signer ?? maybeAcurastBlackboxRequestSigner(options.std);
+  let signer: BlackboxRequestSigner | undefined;
+  try {
+    signer = config.writerKeyDerivation === BLACKBOX_WRITER_KEY_DERIVATION
+      ? deriveBlackboxRequestSigner(config.dek)
+      : options.signer ?? maybeAcurastBlackboxRequestSigner(options.std);
+  } catch (error) {
+    return async (event) => options.onError?.(error, event);
+  }
   if (!signer) {
     return async (event) => {
       options.onError?.(new Error("Blackbox logging requires the Acurast Ed25519 runtime signer"), event);
@@ -302,6 +323,41 @@ export function maybeAcurastBlackboxRequestSigner(
       );
       return stripHexPrefix(signature);
     }
+  };
+}
+
+function deriveBlackboxRequestSigner(dek: string): BlackboxRequestSigner {
+  if (!/^[A-Za-z0-9_-]+$/u.test(dek)) {
+    throw new Error("Blackbox log DEK must be a base64url value");
+  }
+  const inputKeyMaterial = Buffer.from(dek, "base64url");
+  if (inputKeyMaterial.length !== 32) {
+    throw new Error("Blackbox log DEK must decode to 32 bytes");
+  }
+  const seed = Buffer.from(hkdfSync(
+    "sha256",
+    inputKeyMaterial,
+    Buffer.from(BLACKBOX_WRITER_KEY_DERIVATION_SALT, "utf8"),
+    Buffer.from(BLACKBOX_WRITER_KEY_DERIVATION_INFO, "utf8"),
+    32
+  ));
+  const privateKey = createPrivateKey({
+    key: Buffer.concat([ED25519_PKCS8_SEED_PREFIX, seed]),
+    format: "der",
+    type: "pkcs8"
+  });
+  const publicKeyDer = Buffer.from(createPublicKey(privateKey).export({ format: "der", type: "spki" }));
+  if (
+    publicKeyDer.length !== ED25519_SPKI_PREFIX.length + 32 ||
+    !publicKeyDer.subarray(0, ED25519_SPKI_PREFIX.length).equals(ED25519_SPKI_PREFIX)
+  ) {
+    throw new Error("Unable to derive the Blackbox Ed25519 writer public key");
+  }
+  const publicKeyHex = publicKeyDer.subarray(ED25519_SPKI_PREFIX.length).toString("hex");
+  return {
+    scheme: "Ed25519",
+    publicKeyHex,
+    sign: (message) => signEd25519(null, Buffer.from(message), privateKey)
   };
 }
 
@@ -1140,6 +1196,7 @@ function normalizeBlackboxLogConfig(input: {
   writeUrl?: string;
   resumeUrl?: string;
   dek?: string;
+  writerKeyDerivation?: string;
   factoryToken?: string;
   factoryId?: string;
   baseUrl?: string;
@@ -1151,6 +1208,15 @@ function normalizeBlackboxLogConfig(input: {
   timeoutMs?: number;
 }): BlackboxRuntimeLogConfig {
   if (!input.dek) throw new Error("Blackbox log config requires dek");
+  if (
+    input.writerKeyDerivation !== undefined &&
+    input.writerKeyDerivation !== BLACKBOX_WRITER_KEY_DERIVATION
+  ) {
+    throw new Error(`Unsupported Blackbox writerKeyDerivation: ${input.writerKeyDerivation}`);
+  }
+  const writerKeyDerivation = input.writerKeyDerivation as
+    | typeof BLACKBOX_WRITER_KEY_DERIVATION
+    | undefined;
 
   // Factory-token self-registration variant (P1.3).
   if (input.factoryToken && !input.sinkId) {
@@ -1166,6 +1232,7 @@ function normalizeBlackboxLogConfig(input: {
     return withoutUndefined({
       jobId: input.jobId,
       dek: input.dek,
+      writerKeyDerivation,
       factoryToken: input.factoryToken,
       factoryId,
       baseUrl: input.baseUrl,
@@ -1198,6 +1265,7 @@ function normalizeBlackboxLogConfig(input: {
     writeUrl: url.toString(),
     resumeUrl: new URL(resumeUrl).toString(),
     dek: input.dek,
+    writerKeyDerivation,
     baseUrl: input.baseUrl,
     spoolDir: input.spoolDir,
     context: input.context,

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { createPublicKey, verify as verifyEd25519 } from "node:crypto";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +9,7 @@ import { describe, it } from "node:test";
 import {
   blackboxLogConfigFingerprint,
   blackboxLogHostnames,
+  BLACKBOX_WRITER_KEY_DERIVATION,
   createBlackboxRemoteLogger,
   decryptProofLogRecord,
   generateProofLogEncryptionKey,
@@ -20,6 +22,68 @@ import {
 } from "../src/blackbox-spool-internal.js";
 
 describe("Blackbox runtime logger", () => {
+  it("derives one deterministic writer across fresh pre-bound invocations", async () => {
+    const dek = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    const writerPublicKey = "ea7aeb9077ce16b49ac40b454b033109f142b1c0bc3ae31338e75ebc42cef592";
+    const signingMessage = [
+      "POST",
+      "/v1/sinks/sink-stable/resume",
+      "0x96b99efbf6e698912db90f19cfd26d1d321d4db968b9f01d766468a77f8fb9b1",
+      "2026-07-16T12:00:00.000Z",
+      "stable-nonce"
+    ].join("\n");
+    const signature = "nLhiQKZ9520GKFkpXazPL6Lajl3A4NPoeBscXPg41iQe8YXDopchSOLLo/ZioseV3+Vat27rNfx7MYSltAqyDQ==";
+    const resumeRequests: Array<{ body: string; authorization: string }> = [];
+    const createLogger = () => createBlackboxRemoteLogger({
+      getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG"
+        ? JSON.stringify({
+            sinkId: "sink-stable",
+            jobId: "job-stable",
+            writeUrl: "https://blackbox.test/v1/sinks/sink-stable/events",
+            dek,
+            writerKeyDerivation: BLACKBOX_WRITER_KEY_DERIVATION
+          })
+        : undefined,
+      spoolMode: "memory",
+      fetchImpl: (async (url, init) => {
+        if (String(url).endsWith("/resume")) {
+          resumeRequests.push({
+            body: String(init?.body),
+            authorization: (init?.headers as Record<string, string>).authorization
+          });
+          return resumeResponse("sink-stable", { nextSequence: 1, previousHash: null });
+        }
+        return acceptedBatchResponse(init);
+      }) as typeof fetch,
+      signedAt: () => "2026-07-16T12:00:00.000Z",
+      nonce: () => "stable-nonce",
+      onError: (error) => assert.fail(String(error))
+    });
+
+    await createLogger()("first-invocation");
+    await createLogger()("second-invocation");
+
+    assert.equal(resumeRequests.length, 2);
+    const expectedBody = JSON.stringify({ jobId: "job-stable", writerPublicKey });
+    const expectedAuthorization = `Ed25519 ${writerPublicKey}:${signature}`;
+    assert.deepEqual(resumeRequests, [
+      { body: expectedBody, authorization: expectedAuthorization },
+      { body: expectedBody, authorization: expectedAuthorization }
+    ]);
+    const publicKey = createPublicKey({
+      key: Buffer.concat([
+        Buffer.from("302a300506032b6570032100", "hex"),
+        Buffer.from(writerPublicKey, "hex")
+      ]),
+      format: "der",
+      type: "spki"
+    });
+    assert.equal(
+      verifyEd25519(null, Buffer.from(signingMessage, "utf8"), publicKey, Buffer.from(signature, "base64")),
+      true
+    );
+  });
+
   it("parses compact config, signs writes, encrypts records, and keeps posted batches plaintext-free", async () => {
     const dek = generateProofLogEncryptionKey();
     const env = {
@@ -131,6 +195,7 @@ describe("Blackbox runtime logger", () => {
             base: "https://blackbox.test",
             spool: "/data/spool",
             k: dek,
+            wkd: BLACKBOX_WRITER_KEY_DERIVATION,
             ctx: "deck"
           })
         : undefined
@@ -139,6 +204,7 @@ describe("Blackbox runtime logger", () => {
     assert.equal(fromShort?.factoryId, "fac-1");
     assert.equal(fromShort?.baseUrl, "https://blackbox.test");
     assert.equal(fromShort?.spoolDir, "/data/spool");
+    assert.equal(fromShort?.writerKeyDerivation, BLACKBOX_WRITER_KEY_DERIVATION);
     assert.equal(fromShort?.sinkId, undefined);
 
     const explicitEnv: Record<string, string | undefined> = {
@@ -155,6 +221,59 @@ describe("Blackbox runtime logger", () => {
         : undefined;
     assert.deepEqual(blackboxLogHostnames(getFactoryConfig), ["blackbox.test"]);
     assert.match(blackboxLogConfigFingerprint(getFactoryConfig) ?? "", /^0x[0-9a-f]{64}$/u);
+    assert.throws(
+      () => readBlackboxLogConfig((name) => name === "BLACKBOX_LOG_CONFIG"
+        ? JSON.stringify({
+            factoryToken: "bbx_sf_fac-1_secret",
+            baseUrl: "https://blackbox.test",
+            dek,
+            writerKeyDerivation: "future-writer-v2"
+          })
+        : undefined),
+      /Unsupported Blackbox writerKeyDerivation/u
+    );
+  });
+
+  it("uses the config-derived writer for replayed factory registration", async () => {
+    const dek = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    const writerPublicKey = "ea7aeb9077ce16b49ac40b454b033109f142b1c0bc3ae31338e75ebc42cef592";
+    const registrationAuthors: string[] = [];
+    const createLogger = () => createBlackboxRemoteLogger({
+      getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG"
+        ? JSON.stringify({
+            factoryToken: "bbx_sf_stable_secret",
+            baseUrl: "https://blackbox.test",
+            applicationId: "stable-app",
+            dek,
+            writerKeyDerivation: BLACKBOX_WRITER_KEY_DERIVATION
+          })
+        : undefined,
+      spoolMode: "memory",
+      std: { job: { getId: () => 4242 } },
+      fetchImpl: (async (url, init) => {
+        if (String(url).endsWith("/job-sinks")) {
+          registrationAuthors.push((init?.headers as Record<string, string>).authorization);
+          return new Response(JSON.stringify({
+            sink: {
+              sinkId: "sink-job-4242",
+              writeUrl: "https://blackbox.test/v1/sinks/sink-job-4242/events",
+              resumeUrl: "https://blackbox.test/v1/sinks/sink-job-4242/resume"
+            },
+            chain: { nextSequence: 1, previousHash: null }
+          }), { status: 201 });
+        }
+        return acceptedBatchResponse(init);
+      }) as typeof fetch,
+      signedAt: () => "2026-07-16T12:00:00.000Z",
+      nonce: () => "stable-factory-nonce",
+      onError: (error) => assert.fail(String(error))
+    });
+
+    await createLogger()("first-factory-invocation");
+    await createLogger()("second-factory-invocation");
+
+    assert.equal(registrationAuthors.length, 2);
+    assert.ok(registrationAuthors.every((value) => value.startsWith(`Ed25519 ${writerPublicKey}:`)));
   });
 
   it("self-registers a job-bound sink from a factory token, then writes to the derived sink URL", async () => {

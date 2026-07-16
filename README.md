@@ -310,6 +310,14 @@ Both shapes can be supplied as `BLACKBOX_LOG_CONFIG` JSON or expanded
 `BLACKBOX_*` env values. Records are encrypted locally before upload and
 posted batches contain no plaintext log messages. Disk spool state defaults to:
 
+New configs include `writerKeyDerivation: "hkdf-sha256-ed25519-v1"`. In that
+mode every invocation derives the same Ed25519 request writer from the protected
+32-byte log DEK: HKDF-SHA256 uses UTF-8 salt
+`proof.liskov.blackbox.writer-key.v1`, UTF-8 info `Ed25519`, and a 32-byte
+output interpreted as an Ed25519 seed. This keeps sibling invocations on one
+canonical append chain while separating the writer key from record encryption.
+Configs without the marker retain the Acurast runtime signer for compatibility.
+
 ```text
 $SLIPWAY_HOME/logging/spool
 ```
