@@ -109,7 +109,10 @@ describe("runtime env lookup and Acurast adapter", () => {
     assert.deepEqual(calls, [{
       url: "https://liskov.test/api/jobs/runtime-env",
       body: JSON.stringify({ request: true }),
-      headers: { "Content-Type": "application/json" }
+      headers: {
+        "Content-Type": "application/json",
+        "X-Liskov-Acurast-Response-Tunnel": "v1"
+      }
     }]);
   });
 
@@ -163,6 +166,7 @@ describe("runtime env lookup and Acurast adapter", () => {
         Accept: "application/json",
         Authorization: "Bearer token",
         "Content-Type": "application/json",
+        "X-Liskov-Acurast-Response-Tunnel": "v1",
         "X-PublicKey": "public-key",
         "X-Signature": "signature",
         "X-Timestamp": "timestamp"
@@ -191,6 +195,30 @@ describe("runtime env lookup and Acurast adapter", () => {
       error: "runtime_bootstrap_job_not_found",
       reason: "no match"
     });
+  });
+
+  it("unwraps an opted-in success body carried through the Acurast error callback", async () => {
+    const calls: Array<{ headers: Record<string, string> }> = [];
+    const fetchImpl = createAcurastHttpPostFetch({
+      httpPOST(_url, _body, headers, _onSuccess, onError) {
+        calls.push({ headers });
+        onError(
+          'HTTP Post failed with {"domain":"proof.liskov.acurast-response-tunnel.v1","status":201,"body":"{\\"ok\\":true,\\"sinkId\\":\\"sink-1\\"}"} (418)'
+        );
+      }
+    });
+
+    const response = await fetchImpl!("https://logging.test/v1/sink-factories/factory-1/job-sinks", {
+      method: "POST",
+      body: "{}"
+    });
+
+    assert.equal(response.ok, true);
+    assert.equal(response.status, 201);
+    assert.deepEqual(await response.json(), { ok: true, sinkId: "sink-1" });
+    assert.deepEqual(calls, [{
+      headers: { "X-Liskov-Acurast-Response-Tunnel": "v1" }
+    }]);
   });
 
   it("falls back to 599 when an Acurast httpPOST error has no recoverable status", async () => {

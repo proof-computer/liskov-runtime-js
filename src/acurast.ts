@@ -47,6 +47,10 @@ export interface AcurastHttpPostFetchOptions {
   httpPOST?: AcurastHttpPost;
 }
 
+export const LISKOV_ACURAST_RESPONSE_TUNNEL_HEADER = "X-Liskov-Acurast-Response-Tunnel";
+export const LISKOV_ACURAST_RESPONSE_TUNNEL_VERSION = "v1";
+export const LISKOV_ACURAST_RESPONSE_TUNNEL_DOMAIN = "proof.liskov.acurast-response-tunnel.v1";
+
 export const DEFAULT_JOB_ID_ENV_NAMES = [
   "ACURAST_JOB_ID",
   "PROOF_ACURAST_JOB_ID",
@@ -162,7 +166,9 @@ async function fetchBody(body: BodyInit | null | undefined): Promise<string> {
 }
 
 function fetchHeaders(headers: HeadersInit | undefined): Record<string, string> {
-  if (!headers) return {};
+  if (!headers) {
+    return { [LISKOV_ACURAST_RESPONSE_TUNNEL_HEADER]: LISKOV_ACURAST_RESPONSE_TUNNEL_VERSION };
+  }
   if (typeof Headers === "function" && headers instanceof Headers) {
     return acurastHttpPostHeaders(Object.fromEntries(headers.entries()));
   }
@@ -173,9 +179,12 @@ function fetchHeaders(headers: HeadersInit | undefined): Record<string, string> 
 }
 
 function acurastHttpPostHeaders(headers: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(headers).map(([key, value]) => [canonicalAcurastHttpPostHeaderName(key), value])
-  );
+  return {
+    ...Object.fromEntries(
+      Object.entries(headers).map(([key, value]) => [canonicalAcurastHttpPostHeaderName(key), value])
+    ),
+    [LISKOV_ACURAST_RESPONSE_TUNNEL_HEADER]: LISKOV_ACURAST_RESPONSE_TUNNEL_VERSION
+  };
 }
 
 function canonicalAcurastHttpPostHeaderName(key: string): string {
@@ -214,7 +223,31 @@ function acurastHttpPostErrorResponse(error: string): Response {
   const jsonStart = message.indexOf("{");
   const jsonEnd = message.lastIndexOf("}");
   const body = jsonStart !== -1 && jsonEnd > jsonStart ? message.slice(jsonStart, jsonEnd + 1) : message;
+  const tunneled = decodeAcurastResponseTunnel(status, body);
+  if (tunneled) return fetchResponse(tunneled.body, tunneled.status);
   return fetchResponse(body, status);
+}
+
+function decodeAcurastResponseTunnel(status: number, body: string): { status: number; body: string } | undefined {
+  if (status !== 418) return undefined;
+  try {
+    const value = JSON.parse(body) as Record<string, unknown>;
+    const originalStatus = value.status;
+    const originalBody = value.body;
+    if (
+      value.domain !== LISKOV_ACURAST_RESPONSE_TUNNEL_DOMAIN ||
+      typeof originalStatus !== "number" ||
+      !Number.isInteger(originalStatus) ||
+      originalStatus < 200 ||
+      originalStatus > 299 ||
+      typeof originalBody !== "string"
+    ) {
+      return undefined;
+    }
+    return { status: originalStatus, body: originalBody };
+  } catch {
+    return undefined;
+  }
 }
 
 function fetchResponse(body: string, status: number): Response {

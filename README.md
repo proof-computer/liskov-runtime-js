@@ -35,6 +35,12 @@ The package tarball intentionally contains only `dist`, `README.md`,
 `SECURITY.md`, and package metadata. Example source and tests stay in the
 repository.
 
+Runtime v0.3.21 opts Liskov-owned POST requests into the server response tunnel
+used by Acurast processors that omit successful `httpPOST` response bodies. The
+adapter unwraps the original 2xx status and JSON before bootstrap, Lockbox, or
+Blackbox callers see it; ordinary fetch transports and servers that do not
+recognize the opt-in header retain their existing behavior.
+
 ## Minimal Entrypoint
 
 Use `bootstrapSlipwayRuntime()` before importing Application code:
