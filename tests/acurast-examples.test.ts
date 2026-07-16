@@ -267,11 +267,18 @@ function exampleFetch(input: {
       return jsonResponse(runtimeEnvResponse(input.runtimeEnvValues));
     }
     if (parsed.hostname === "logging.slipway.proof.computer" && parsed.pathname.endsWith("/job-sinks")) {
-      return jsonResponse({ sinkId: "sink-example" });
+      return jsonResponse({
+        sinkId: "sink-example",
+        chain: { nextSequence: 1, previousHash: null }
+      });
     }
     if (parsed.hostname === "logging.slipway.proof.computer" && parsed.pathname.endsWith("/events")) {
-      input.batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
-      return jsonResponse({ ok: true });
+      const batch = JSON.parse(String(init?.body)) as BlackboxLogBatch;
+      input.batches.push(batch);
+      return jsonResponse({
+        ok: true,
+        chain: { nextSequence: batch.sequenceEnd + 1, previousHash: batch.batchId }
+      });
     }
     if (parsed.hostname === "webhook.example.test") {
       input.webhookBodies?.push(body ?? {});

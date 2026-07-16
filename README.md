@@ -299,13 +299,12 @@ runtime logs intentionally.
 
 Accepted config shapes:
 
-- Factory token: `factoryToken` + `baseUrl` + `dek`. This is the product
-  target. The writer self-registers the job-bound sink on first flush and
-  resumes from the server's canonical sequence head. This keeps logging
-  contiguous when a later Acurast invocation starts without the previous
-  invocation's local spool state.
-- Pre-bound sink: `sinkId` + `jobId` + `writeUrl` + `dek`. This remains
-  accepted for internal and legacy jobs.
+- Pre-bound sink: `sinkId` + `jobId` + `writeUrl` + `dek`, with an optional
+  `resumeUrl`. This remains the preferred production provisioning mode. Older
+  configs derive `/resume` only when `writeUrl` ends in `/events`.
+- Factory token: `factoryToken` + `baseUrl` + `dek`. The writer self-registers
+  the job-bound sink on first flush and receives the same write, resume, and
+  canonical-chain contract as a pre-bound sink.
 
 Both shapes can be supplied as `BLACKBOX_LOG_CONFIG` JSON or expanded
 `BLACKBOX_*` env values. Records are encrypted locally before upload and
@@ -316,11 +315,13 @@ $SLIPWAY_HOME/logging/spool
 ```
 
 When disk spool is unavailable in `auto` mode, the writer falls back to memory.
-If another writer advances the same factory sink between registration and
-upload, the runtime refreshes the canonical head and retries the encrypted
-pending batch with a bounded sequence rebase. The encrypted records themselves
-are unchanged. Invalid or inconsistent recovery responses fail closed through
-`logging.onError`.
+Before constructing a new batch, the runtime resolves the server's canonical
+head in either provisioning mode. If another writer advances the sink between
+that resolution and upload, the runtime consumes the conflict response's head
+and retries the encrypted pending batch with at most three sequence rebases.
+The encrypted records themselves are unchanged. Invalid or inconsistent
+resume, success, or conflict heads fail closed through `logging.onError` while
+the spool remains intact.
 Unknown config shapes report through diagnostics and `logging.onError`; they do
 not silently degrade to a no-op.
 

@@ -751,7 +751,8 @@ describe("top-level Slipway runtime bootstrap", () => {
           const request = JSON.parse(String(init?.body)) as { requestedSecretIds: string[] };
           return jsonResponse(lockboxResponse(request, payload));
         }
-        if (parsed.pathname.endsWith("/job-sinks")) return jsonResponse({ sinkId: "sink-background-777" });
+        if (parsed.pathname.endsWith("/job-sinks")) return blackboxRegistration("sink-background-777");
+        if (parsed.pathname.endsWith("/events")) return blackboxWriteResponse(init);
         return jsonResponse({ ok: true });
       }) as typeof fetch
     });
@@ -923,8 +924,8 @@ describe("top-level Slipway runtime bootstrap", () => {
           body: String(init?.body)
         });
         return String(url).endsWith("/job-sinks")
-          ? jsonResponse({ sink: { sinkId: "sink-job-777" } })
-          : jsonResponse({ ok: true });
+          ? blackboxRegistration("sink-job-777")
+          : blackboxWriteResponse(init);
       }) as typeof fetch
     });
     try {
@@ -993,7 +994,8 @@ describe("top-level Slipway runtime bootstrap", () => {
           const request = JSON.parse(String(init?.body)) as { requestedSecretIds: string[] };
           return jsonResponse(lockboxResponse(request, payload));
         }
-        if (parsed.pathname.endsWith("/job-sinks")) return jsonResponse({ sinkId: "sink-lockbox-777" });
+        if (parsed.pathname.endsWith("/job-sinks")) return blackboxRegistration("sink-lockbox-777");
+        if (parsed.pathname.endsWith("/events")) return blackboxWriteResponse(init);
         return jsonResponse({ ok: true });
       }) as typeof fetch
     });
@@ -1025,9 +1027,9 @@ describe("top-level Slipway runtime bootstrap", () => {
       identityProvider: fakeIdentityProvider(),
       nowMs: () => 1_000,
       fetchImpl: (async (url, init) => {
-        if (String(url).endsWith("/job-sinks")) return jsonResponse({ sinkId: "sink-refresh-777" });
+        if (String(url).endsWith("/job-sinks")) return blackboxRegistration("sink-refresh-777");
         batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
-        return jsonResponse({ ok: true });
+        return blackboxWriteResponse(init);
       }) as typeof fetch
     });
     try {
@@ -1103,10 +1105,10 @@ describe("top-level Slipway runtime bootstrap", () => {
         const parsed = new URL(String(url));
         if (parsed.pathname.endsWith("/job-sinks")) {
           registerPaths.push(parsed.pathname);
-          return jsonResponse({ sinkId: `sink-${registerPaths.length}` });
+          return blackboxRegistration(`sink-${registerPaths.length}`);
         }
         batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
-        return jsonResponse({ ok: true });
+        return blackboxWriteResponse(init);
       }) as typeof fetch
     });
     try {
@@ -1432,6 +1434,24 @@ function blackboxRuntimeStd() {
       }
     }
   };
+}
+
+function blackboxRegistration(sinkId: string): Response {
+  return jsonResponse({
+    sinkId,
+    chain: { nextSequence: 1, previousHash: null }
+  });
+}
+
+function blackboxWriteResponse(init: RequestInit | undefined): Response {
+  const batch = JSON.parse(String(init?.body)) as BlackboxLogBatch;
+  return jsonResponse({
+    ok: true,
+    chain: {
+      nextSequence: batch.sequenceEnd + 1,
+      previousHash: batch.batchId
+    }
+  });
 }
 
 function runtimeEnvResponse(): Record<string, unknown> {

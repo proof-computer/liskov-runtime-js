@@ -45,12 +45,15 @@ describe("Blackbox runtime logger", () => {
         }
       },
       fetchImpl: (async (url, init) => {
+        if (String(url).endsWith("/resume")) {
+          return resumeResponse("sink-1", { nextSequence: 1, previousHash: null });
+        }
         calls.push({
           url: String(url),
           headers: init?.headers as Record<string, string>,
           body: String(init?.body)
         });
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        return acceptedBatchResponse(init, 200);
       }) as typeof fetch,
       signedAt: () => "2026-05-24T12:00:00.000Z",
       nonce: () => "nonce-1",
@@ -66,7 +69,8 @@ describe("Blackbox runtime logger", () => {
 
     assert.equal(calls[0]?.url, "https://blackbox.test/v1/sinks/sink-1/events");
     assert.match(calls[0]?.headers.authorization ?? "", /^Ed25519 a{64}:/u);
-    assert.match(signedMessages[0] ?? "", /^POST\n\/v1\/sinks\/sink-1\/events\n0x[0-9a-f]{64}\n2026-05-24T12:00:00\.000Z\nnonce-1$/u);
+    assert.match(signedMessages[0] ?? "", /^POST\n\/v1\/sinks\/sink-1\/resume\n0x[0-9a-f]{64}\n2026-05-24T12:00:00\.000Z\nnonce-1$/u);
+    assert.match(signedMessages[1] ?? "", /^POST\n\/v1\/sinks\/sink-1\/events\n0x[0-9a-f]{64}\n2026-05-24T12:00:00\.000Z\nnonce-1$/u);
     assert.equal(calls[0]?.body.includes("validator-start"), false);
     assert.equal(calls[0]?.body.includes("poll"), false);
 
@@ -97,12 +101,15 @@ describe("Blackbox runtime logger", () => {
         publicKeyHex: "c".repeat(64),
         sign: () => "d".repeat(128)
       },
-      fetchImpl: (async (_url, init) => {
+      fetchImpl: (async (url, init) => {
+        if (String(url).endsWith("/resume")) {
+          return resumeResponse("sink-1", { nextSequence: 1, previousHash: null });
+        }
         attempt += 1;
         calls.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
         return attempt === 1
           ? new Response("temporary failure", { status: 503 })
-          : new Response(JSON.stringify({ ok: true }), { status: 200 });
+          : acceptedBatchResponse(init, 200);
       }) as typeof fetch
     });
 
@@ -177,8 +184,15 @@ describe("Blackbox runtime logger", () => {
           body: String(init?.body)
         });
         return String(url).endsWith("/job-sinks")
-          ? new Response(JSON.stringify({ sink: { sinkId: "sink-job-76976" } }), { status: 201 })
-          : new Response(JSON.stringify({ ok: true }), { status: 201 });
+          ? new Response(JSON.stringify({
+              sink: {
+                sinkId: "sink-job-76976",
+                writeUrl: "https://blackbox.test/v1/sinks/sink-job-76976/events",
+                resumeUrl: "https://blackbox.test/v1/sinks/sink-job-76976/resume"
+              },
+              chain: { nextSequence: 1, previousHash: null }
+            }), { status: 201 })
+          : acceptedBatchResponse(init);
       }) as typeof fetch,
       onError: (error) => assert.fail(String(error))
     });
@@ -225,11 +239,11 @@ describe("Blackbox runtime logger", () => {
         if (String(url).endsWith("/job-sinks")) {
           return Response.json({
             sinkId: "sink-ephemeral",
-            chain: { nextSequence: 41, previousHash: "0xprevious" }
+            chain: { nextSequence: 41, previousHash: chainHash("1") }
           });
         }
         batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
-        return new Response(JSON.stringify({ ok: true }), { status: 201 });
+        return acceptedBatchResponse(init);
       }) as typeof fetch,
       onError: (error) => assert.fail(String(error))
     });
@@ -239,10 +253,55 @@ describe("Blackbox runtime logger", () => {
     assert.equal(batches.length, 1);
     assert.equal(batches[0]?.sequenceStart, 41);
     assert.equal(batches[0]?.sequenceEnd, 41);
-    assert.equal(batches[0]?.previousHash, "0xprevious");
+    assert.equal(batches[0]?.previousHash, chainHash("1"));
   });
 
-  it("refreshes the canonical chain head and retries a racing sequence conflict", async () => {
+  it("resumes a fresh pre-bound invocation before constructing its first batch", async () => {
+    const dek = generateProofLogEncryptionKey();
+    const urls: string[] = [];
+    const batches: BlackboxLogBatch[] = [];
+    const logger = createBlackboxRemoteLogger({
+      getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG"
+        ? JSON.stringify({
+            sinkId: "sink-prebound",
+            jobId: "job-prebound",
+            writeUrl: "https://blackbox.test/v1/sinks/sink-prebound/events",
+            resumeUrl: "https://blackbox.test/v1/sinks/sink-prebound/resume",
+            dek
+          })
+        : undefined,
+      spoolMode: "memory",
+      signer: {
+        scheme: "Ed25519",
+        publicKeyHex: "a".repeat(64),
+        sign: () => "b".repeat(128)
+      },
+      fetchImpl: (async (url, init) => {
+        urls.push(String(url));
+        if (String(url).endsWith("/resume")) {
+          assert.deepEqual(JSON.parse(String(init?.body)), {
+            jobId: "job-prebound",
+            writerPublicKey: "a".repeat(64)
+          });
+          return resumeResponse("sink-prebound", { nextSequence: 11, previousHash: chainHash("2") });
+        }
+        batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
+        return acceptedBatchResponse(init);
+      }) as typeof fetch,
+      onError: (error) => assert.fail(String(error))
+    });
+
+    await logger("prebound-restart");
+
+    assert.deepEqual(urls, [
+      "https://blackbox.test/v1/sinks/sink-prebound/resume",
+      "https://blackbox.test/v1/sinks/sink-prebound/events"
+    ]);
+    assert.equal(batches[0]?.sequenceStart, 11);
+    assert.equal(batches[0]?.previousHash, chainHash("2"));
+  });
+
+  it("consumes a conflict head and retries a racing sequence conflict", async () => {
     const dek = generateProofLogEncryptionKey();
     let registrations = 0;
     const batches: BlackboxLogBatch[] = [];
@@ -266,9 +325,7 @@ describe("Blackbox runtime logger", () => {
           registrations += 1;
           return Response.json({
             sinkId: "sink-race",
-            chain: registrations === 1
-              ? { nextSequence: 1, previousHash: null }
-              : { nextSequence: 2, previousHash: "0xaccepted-by-racer" }
+            chain: { nextSequence: 1, previousHash: null }
           });
         }
         batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
@@ -276,22 +333,208 @@ describe("Blackbox runtime logger", () => {
           ? new Response(JSON.stringify({
               ok: false,
               error: "sequence_conflict",
-              reason: "sequence already exists with a different hash"
+              reason: "sequence already exists with a different hash",
+              chain: { nextSequence: 2, previousHash: chainHash("3") },
+              auditEventId: "17"
             }), { status: 409 })
-          : new Response(JSON.stringify({ ok: true }), { status: 201 });
+          : acceptedBatchResponse(init);
       }) as typeof fetch,
       onError: (error) => assert.fail(String(error))
     });
 
     await logger("racing-event");
 
-    assert.equal(registrations, 2);
+    assert.equal(registrations, 1);
     assert.equal(batches.length, 2);
     assert.equal(batches[0]?.sequenceStart, 1);
     assert.equal(batches[1]?.sequenceStart, 2);
-    assert.equal(batches[1]?.previousHash, "0xaccepted-by-racer");
+    assert.equal(batches[1]?.previousHash, chainHash("3"));
     assert.notEqual(batches[1]?.batchId, batches[0]?.batchId);
     assert.deepEqual(batches[1]?.encrypted, batches[0]?.encrypted);
+  });
+
+  it("rebases when the next sequence is unchanged but the canonical hash changed", async () => {
+    const dek = generateProofLogEncryptionKey();
+    const batches: BlackboxLogBatch[] = [];
+    const logger = createBlackboxRemoteLogger({
+      getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG"
+        ? JSON.stringify({
+            sinkId: "sink-same-sequence",
+            jobId: "job-same-sequence",
+            writeUrl: "https://blackbox.test/v1/sinks/sink-same-sequence/events",
+            dek
+          })
+        : undefined,
+      spoolMode: "memory",
+      signer: {
+        scheme: "Ed25519",
+        publicKeyHex: "a".repeat(64),
+        sign: () => "b".repeat(128)
+      },
+      fetchImpl: (async (url, init) => {
+        if (String(url).endsWith("/resume")) {
+          return resumeResponse("sink-same-sequence", {
+            nextSequence: 7,
+            previousHash: chainHash("4")
+          });
+        }
+        batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
+        return batches.length === 1
+          ? new Response(JSON.stringify({
+              ok: false,
+              error: "sequence_conflict",
+              chain: { nextSequence: 7, previousHash: chainHash("5") },
+              auditEventId: "18"
+            }), { status: 409 })
+          : acceptedBatchResponse(init);
+      }) as typeof fetch,
+      onError: (error) => assert.fail(String(error))
+    });
+
+    await logger("same-sequence-race");
+
+    assert.equal(batches.length, 2);
+    assert.equal(batches[0]?.sequenceStart, 7);
+    assert.equal(batches[1]?.sequenceStart, 7);
+    assert.equal(batches[1]?.previousHash, chainHash("5"));
+    assert.equal(batches[1]?.createdAt, batches[0]?.createdAt);
+    assert.deepEqual(batches[1]?.encrypted, batches[0]?.encrypted);
+    assert.notEqual(batches[1]?.batchId, batches[0]?.batchId);
+  });
+
+  it("replays an accepted pending batch in its original form after the response is lost", async (t) => {
+    const spoolDir = await fs.mkdtemp(path.join(tmpdir(), "blackbox-lost-response-test-"));
+    t.after(async () => fs.rm(spoolDir, { recursive: true, force: true }));
+    const dek = generateProofLogEncryptionKey();
+    let accepted: BlackboxLogBatch | undefined;
+    const firstErrors: string[] = [];
+    const makeLogger = (lostResponse: boolean, errors: string[]) => createBlackboxRemoteLogger({
+      getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG"
+        ? JSON.stringify({
+            sinkId: "sink-lost-response",
+            jobId: "job-lost-response",
+            writeUrl: "https://blackbox.test/v1/sinks/sink-lost-response/events",
+            spoolDir,
+            dek
+          })
+        : undefined,
+      spoolMode: "disk",
+      spoolDir,
+      signer: {
+        scheme: "Ed25519",
+        publicKeyHex: "a".repeat(64),
+        sign: () => "b".repeat(128)
+      },
+      fetchImpl: (async (url, init) => {
+        if (String(url).endsWith("/resume")) {
+          return resumeResponse("sink-lost-response", accepted
+            ? { nextSequence: accepted.sequenceEnd + 1, previousHash: accepted.batchId ?? null }
+            : { nextSequence: 1, previousHash: null });
+        }
+        const replay = JSON.parse(String(init?.body)) as BlackboxLogBatch;
+        if (!accepted) accepted = replay;
+        else if (replay.batchId === accepted.batchId) assert.deepEqual(replay, accepted);
+        if (lostResponse) throw new Error("response lost after accept");
+        return acceptedBatchResponse(init, 200);
+      }) as typeof fetch,
+      onError: (error) => errors.push(String(error))
+    });
+
+    await makeLogger(true, firstErrors)("accepted-before-disconnect");
+    assert.equal(firstErrors.length, 1);
+    assert.equal((await fs.readdir(path.join(spoolDir, "batches"))).length, 1);
+
+    const replayErrors: string[] = [];
+    await makeLogger(false, replayErrors)("after-restart");
+    assert.deepEqual(replayErrors, []);
+    assert.equal((await fs.readdir(path.join(spoolDir, "batches"))).length, 0);
+  });
+
+  it("keeps the durable spool intact and reports once when resume data is malformed", async (t) => {
+    const spoolDir = await fs.mkdtemp(path.join(tmpdir(), "blackbox-malformed-resume-test-"));
+    t.after(async () => fs.rm(spoolDir, { recursive: true, force: true }));
+    const errors: string[] = [];
+    const logger = createBlackboxRemoteLogger({
+      getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG"
+        ? JSON.stringify({
+            sinkId: "sink-malformed",
+            jobId: "job-malformed",
+            writeUrl: "https://blackbox.test/v1/sinks/sink-malformed/events",
+            spoolDir,
+            dek: generateProofLogEncryptionKey()
+          })
+        : undefined,
+      spoolMode: "disk",
+      spoolDir,
+      signer: {
+        scheme: "Ed25519",
+        publicKeyHex: "a".repeat(64),
+        sign: () => "b".repeat(128)
+      },
+      fetchImpl: (async () => Response.json({
+        ok: true,
+        sinkId: "sink-malformed",
+        chain: { nextSequence: 2, previousHash: "not-a-chain-hash" }
+      })) as typeof fetch,
+      onError: (error) => errors.push(String(error))
+    });
+
+    await logger("remains-spooled");
+
+    assert.equal(errors.length, 1);
+    assert.match(errors[0] ?? "", /32-byte 0x-prefixed hash/u);
+    assert.equal((await fs.readdir(path.join(spoolDir, "records"))).length, 1);
+    assert.equal((await fs.readdir(path.join(spoolDir, "batches"))).length, 0);
+  });
+
+  it("stops after three conflict rebases and emits one redacted failure", async () => {
+    const errors: string[] = [];
+    const batches: BlackboxLogBatch[] = [];
+    const logger = createBlackboxRemoteLogger({
+      getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG"
+        ? JSON.stringify({
+            factoryToken: "bbx_sf_exhausted_secret",
+            baseUrl: "https://blackbox.test",
+            dek: generateProofLogEncryptionKey()
+          })
+        : undefined,
+      spoolMode: "memory",
+      std: { job: { getId: () => "job-exhausted" } },
+      signer: {
+        scheme: "Ed25519",
+        publicKeyHex: "a".repeat(64),
+        sign: () => "b".repeat(128)
+      },
+      fetchImpl: (async (url, init) => {
+        if (String(url).endsWith("/job-sinks")) {
+          return Response.json({
+            sinkId: "sink-exhausted",
+            chain: { nextSequence: 1, previousHash: null }
+          });
+        }
+        const batch = JSON.parse(String(init?.body)) as BlackboxLogBatch;
+        batches.push(batch);
+        return new Response(JSON.stringify({
+          ok: false,
+          error: "sequence_conflict",
+          reason: "conflict",
+          chain: {
+            nextSequence: batch.sequenceStart + 1,
+            previousHash: chainHash(String(batches.length % 10))
+          },
+          auditEventId: String(100 + batches.length)
+        }), { status: 409 });
+      }) as typeof fetch,
+      onError: (error) => errors.push(String(error))
+    });
+
+    await logger("retry-exhaustion", { secret: "must-not-appear" });
+
+    assert.equal(batches.length, 4);
+    assert.deepEqual(batches.map((batch) => batch.sequenceStart), [1, 2, 3, 4]);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0] ?? "", /Blackbox log write failed: 409/u);
+    assert.equal(errors[0]?.includes("must-not-appear"), false);
   });
 
   it("spools records while self-registration fails and flushes them all once the sink exists", async () => {
@@ -320,10 +563,13 @@ describe("Blackbox runtime logger", () => {
           registerAttempts += 1;
           return registerAttempts === 1
             ? new Response("unreachable", { status: 503 })
-            : new Response(JSON.stringify({ sinkId: "sink-9" }), { status: 201 });
+            : new Response(JSON.stringify({
+                sinkId: "sink-9",
+                chain: { nextSequence: 1, previousHash: null }
+              }), { status: 201 });
         }
         batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
-        return new Response(JSON.stringify({ ok: true }), { status: 201 });
+        return acceptedBatchResponse(init);
       }) as typeof fetch,
       onError: (error) => errors.push(String(error))
     });
@@ -372,10 +618,19 @@ describe("Blackbox runtime logger", () => {
         fetchImpl: (async (url, init) => {
           if (String(url).endsWith("/job-sinks")) {
             registerAttempts += 1;
-            return new Response(JSON.stringify({ sinkId: "sink-9" }), { status: 201 });
+            return new Response(JSON.stringify({
+              sinkId: "sink-9",
+              chain: { nextSequence: 1, previousHash: null }
+            }), { status: 201 });
+          }
+          if (String(url).endsWith("/resume")) {
+            const last = batches.at(-1);
+            return resumeResponse("sink-9", last
+              ? { nextSequence: last.sequenceEnd + 1, previousHash: last.batchId ?? null }
+              : { nextSequence: 1, previousHash: null });
           }
           batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
-          return new Response(JSON.stringify({ ok: true }), { status: 201 });
+          return acceptedBatchResponse(init);
         }) as typeof fetch,
         onError: (error) => assert.fail(String(error))
       });
@@ -390,6 +645,54 @@ describe("Blackbox runtime logger", () => {
     assert.equal(batches[1]?.sinkId, "sink-9");
     assert.equal(batches[1]?.sequenceStart, 2);
     assert.equal(batches[1]?.previousHash, batches[0]?.batchId);
+  });
+
+  it("resets persisted sink and chain identity when the runtime job changes", async (t) => {
+    const spoolDir = await fs.mkdtemp(path.join(tmpdir(), "blackbox-job-reset-test-"));
+    t.after(async () => fs.rm(spoolDir, { recursive: true, force: true }));
+    const dek = generateProofLogEncryptionKey();
+    const registrations: string[] = [];
+    const batches: BlackboxLogBatch[] = [];
+    const makeLogger = (jobId: string) => createBlackboxRemoteLogger({
+      getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG"
+        ? JSON.stringify({
+            factoryToken: "bbx_sf_reset_secret",
+            baseUrl: "https://blackbox.test",
+            spoolDir,
+            dek
+          })
+        : undefined,
+      spoolMode: "disk",
+      spoolDir,
+      std: { job: { getId: () => jobId } },
+      signer: {
+        scheme: "Ed25519",
+        publicKeyHex: "a".repeat(64),
+        sign: () => "b".repeat(128)
+      },
+      fetchImpl: (async (url, init) => {
+        if (String(url).endsWith("/job-sinks")) {
+          const body = JSON.parse(String(init?.body)) as { jobId: string };
+          registrations.push(body.jobId);
+          return Response.json({
+            sinkId: `sink-${body.jobId}`,
+            chain: { nextSequence: 1, previousHash: null }
+          });
+        }
+        batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
+        return acceptedBatchResponse(init);
+      }) as typeof fetch,
+      onError: (error) => assert.fail(String(error))
+    });
+
+    await makeLogger("job-one")("first-job");
+    await makeLogger("job-two")("second-job");
+
+    assert.deepEqual(registrations, ["job-one", "job-two"]);
+    assert.deepEqual(batches.map((batch) => [batch.sinkId, batch.jobId, batch.sequenceStart]), [
+      ["sink-job-one", "job-one", 1],
+      ["sink-job-two", "job-two", 1]
+    ]);
   });
 
   it("fails loudly on an unrecognized config shape instead of degrading to a silent no-op", async () => {
@@ -437,7 +740,7 @@ describe("Blackbox runtime logger", () => {
           firstRequestStarted();
           await firstReleased;
         }
-        return Response.json({ ok: true });
+        return acceptedBatchResponse(init);
       }) as typeof fetch
     });
 
@@ -500,7 +803,7 @@ describe("Blackbox runtime logger", () => {
       spoolDir,
       fetchImpl: (async (_url, init) => {
         batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
-        return Response.json({ ok: true });
+        return acceptedBatchResponse(init);
       }) as typeof fetch
     });
 
@@ -546,7 +849,7 @@ describe("Blackbox runtime logger", () => {
       onError: (error) => errors.push(String(error)),
       fetchImpl: (async (_url, init) => {
         batches.push(JSON.parse(String(init?.body)) as BlackboxLogBatch);
-        return Response.json({ ok: true });
+        return acceptedBatchResponse(init);
       }) as typeof fetch
     });
 
@@ -596,13 +899,13 @@ describe("Blackbox runtime logger", () => {
     const logger = diskLogger({
       spoolDir,
       onError: (error) => errors.push(String(error)),
-      fetchImpl: (async () => {
+      fetchImpl: (async (_url, init) => {
         requestCount += 1;
         if (requestCount === 1) {
           sinkStarted();
           await sinkReleased;
         }
-        return Response.json({ ok: true });
+        return acceptedBatchResponse(init);
       }) as typeof fetch
     });
     const writes = [logger("quota-0", { payload: "x".repeat(40_000) })];
@@ -626,6 +929,7 @@ function diskLogger(options: {
   onError?: (error: unknown, event: string) => void;
 }) {
   const dek = options.dek ?? generateProofLogEncryptionKey();
+  const write = options.fetchImpl ?? (async (_url, init) => acceptedBatchResponse(init)) as typeof fetch;
   return createBlackboxRemoteLogger({
     getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG"
       ? JSON.stringify({
@@ -643,9 +947,34 @@ function diskLogger(options: {
       publicKeyHex: "a".repeat(64),
       sign: () => "b".repeat(128)
     },
-    fetchImpl: options.fetchImpl ?? (async () => Response.json({ ok: true })) as typeof fetch,
+    fetchImpl: (async (url, init) => String(url).endsWith("/resume")
+      ? resumeResponse("sink-disk", { nextSequence: 1, previousHash: null })
+      : write(url, init)) as typeof fetch,
     onError: options.onError
   });
+}
+
+function acceptedBatchResponse(init: RequestInit | undefined, status = 201): Response {
+  const batch = JSON.parse(String(init?.body)) as BlackboxLogBatch;
+  return new Response(JSON.stringify({
+    ok: true,
+    chain: {
+      nextSequence: batch.sequenceEnd + 1,
+      previousHash: batch.batchId
+    }
+  }), { status });
+}
+
+function resumeResponse(
+  sinkId: string,
+  chain: { nextSequence: number; previousHash: string | null },
+  status = 200
+): Response {
+  return new Response(JSON.stringify({ ok: true, sinkId, chain }), { status });
+}
+
+function chainHash(nibble: string): string {
+  return `0x${nibble.repeat(64)}`;
 }
 
 async function durableJsonSize(spoolDir: string): Promise<number> {
