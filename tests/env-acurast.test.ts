@@ -113,6 +113,28 @@ describe("runtime env lookup and Acurast adapter", () => {
     }]);
   });
 
+  it("serializes object-shaped Acurast httpPOST success responses", async () => {
+    const fetchImpl = createAcurastHttpPostFetch({
+      httpPOST(_url, _body, _headers, onSuccess) {
+        onSuccess({
+          batch: { batchId: "batch-1" },
+          chain: { nextSequence: 2, previousHash: "0x" + "ab".repeat(32) }
+        }, "certificate");
+      }
+    });
+
+    const response = await fetchImpl!("https://logging.test/v1/sinks/sink-1/events", {
+      method: "POST",
+      body: "{}"
+    });
+
+    assert.equal(response.ok, true);
+    assert.deepEqual(await response.json(), {
+      batch: { batchId: "batch-1" },
+      chain: { nextSequence: 2, previousHash: "0x" + "ab".repeat(32) }
+    });
+  });
+
   it("canonicalizes fetch header casing before calling Acurast httpPOST", async () => {
     const calls: Array<{ headers: Record<string, string> }> = [];
     const fetchImpl = createAcurastHttpPostFetch({

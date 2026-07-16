@@ -17,7 +17,7 @@ export type AcurastHttpPost = (
   url: string,
   body: string,
   headers: Record<string, string>,
-  onSuccess: (response: string, certificate: string) => void,
+  onSuccess: (response: unknown, certificate: string) => void,
   onError: (error: string) => void
 ) => void;
 
@@ -101,11 +101,17 @@ export function createAcurastHttpPostFetch(options: AcurastHttpPostFetchOptions 
         url,
         body,
         headers,
-        (response) => resolve(fetchResponse(response, 200)),
+        (response) => resolve(fetchResponse(acurastHttpPostSuccessBody(response), 200)),
         (error) => resolve(acurastHttpPostErrorResponse(error))
       );
     });
   }) as typeof fetch;
+}
+
+function acurastHttpPostSuccessBody(response: unknown): string {
+  if (typeof response === "string") return response;
+  const serialized = JSON.stringify(response);
+  return serialized ?? String(response);
 }
 
 export async function resolveAcurastRuntimeIdentityAsync(
