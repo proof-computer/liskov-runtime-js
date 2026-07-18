@@ -490,7 +490,6 @@ async function promiseWithTimeout<T>(
           onTimeout?.();
           reject(new Error(`${label} timed out after ${timeoutMs}ms`));
         }, timeoutMs);
-        timer.unref?.();
       })
     ]);
   } finally {
