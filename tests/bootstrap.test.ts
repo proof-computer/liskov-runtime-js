@@ -233,14 +233,14 @@ describe("top-level Slipway runtime bootstrap", () => {
       assert.equal(runtimeBootstrapMessage.applicationId, undefined);
       assert.equal(secretBootstrapMessage.domain, "proof.liskov.secret-bootstrap-request.v1");
       assert.equal(secretBootstrapMessage.responseEncryptionKey, "ab".repeat(33));
-      assert.equal(runtimeDiagnosticMessage.domain, "proof.slipway.runtime-diagnostic.v1");
+      assert.equal(runtimeDiagnosticMessage.domain, "proof.liskov.runtime-diagnostic.v2");
       assert.equal(runtimeDiagnosticMessage.stage, "runtime.start");
       const startDiagnostic = diagnosticBodies.find((body) => body.stage === "runtime.start");
       assert.ok(startDiagnostic);
       assert.equal(startDiagnostic.token, undefined);
       assert.equal(startDiagnostic.signature, "0x" + "11".repeat(64));
       assert.equal(startDiagnostic.jobId, "job-1");
-      assert.equal(startDiagnostic.processorAddress, "processor-1");
+      assert.equal(startDiagnostic.processorId, "processor-1");
     } finally {
       handle.stop();
     }
@@ -957,6 +957,79 @@ describe("top-level Slipway runtime bootstrap", () => {
     } finally {
       handle.stop();
     }
+  });
+
+  it("reports a typed signed fatal before a runtime-bootstrap handle exists", async () => {
+    const diagnosticBodies: Record<string, unknown>[] = [];
+    let caught: unknown;
+    try {
+      await bootstrapSlipwayRuntime({
+        env: {},
+        bootstrap: {
+          mode: "signed",
+          coreUrl: "https://liskov.test",
+          retry: { maxAttempts: 1, maxElapsedMs: 1_000 }
+        },
+        identityProvider: fakeIdentityProvider(),
+        nowMs: () => 1_000,
+        fetchImpl: (async (url, init) => {
+          const path = new URL(String(url)).pathname;
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          if (path === "/api/jobs/runtime-diagnostics") {
+            diagnosticBodies.push(body);
+            return jsonResponse({ ok: true });
+          }
+          if (path === "/api/jobs/runtime-bootstrap") {
+            return new Response(JSON.stringify({
+              ok: false,
+              error: "runtime_bootstrap_policy_mismatch",
+              retryable: false
+            }), {
+              status: 409,
+              headers: { "content-type": "application/json" }
+            });
+          }
+          throw new Error(`unexpected path ${path}`);
+        }) as typeof fetch
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught instanceof Error);
+    assert.equal(diagnosticBodies.length, 1);
+    assert.equal(diagnosticBodies[0].domain, "proof.liskov.runtime-diagnostic.v2");
+    assert.equal(diagnosticBodies[0].stage, "runtime.fatal.bootstrap");
+    assert.equal(diagnosticBodies[0].status, "failed");
+    assert.equal(diagnosticBodies[0].code, "runtime_bootstrap_policy_mismatch");
+    assert.equal(diagnosticBodies[0].jobId, "job-1");
+    assert.equal(diagnosticBodies[0].processorId, "processor-1");
+  });
+
+  it("preserves the original stage-zero identity error after the bounded fatal attempt", async () => {
+    const original = new Error("Acurast response encryption key is required for runtime bootstrap");
+    const localDiagnostics: Array<{ stage: string; code?: string }> = [];
+    const identityProvider: RuntimeIdentityProvider = {
+      async resolveIdentity() { throw original; },
+      async sign() { throw new Error("must not sign without identity"); },
+      async decryptGrantPayload() { throw new Error("must not decrypt without identity"); }
+    };
+    let caught: unknown;
+    try {
+      await bootstrapSlipwayRuntime({
+        env: {},
+        bootstrap: { mode: "signed", coreUrl: "https://liskov.test" },
+        identityProvider,
+        diagnosticSendTimeoutMs: 20,
+        diagnostics(event) { localDiagnostics.push(event); }
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.equal(caught, original);
+    assert.deepEqual(localDiagnostics.map(({ stage, code }) => ({ stage, code })), [{
+      stage: "runtime.fatal.bootstrap",
+      code: "lockbox_response_key_missing"
+    }]);
   });
 
   it("stops scheduled background secret retries", async () => {

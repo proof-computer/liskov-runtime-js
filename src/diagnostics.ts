@@ -7,33 +7,78 @@ import {
 } from "./shared.js";
 
 export const SLIPWAY_RUNTIME_DIAGNOSTIC_DOMAIN = "proof.slipway.runtime-diagnostic.v1";
+export const LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V2 = "proof.liskov.runtime-diagnostic.v2";
 export const DEFAULT_SLIPWAY_RUNTIME_HEALTH_INTERVAL_MS = 30_000;
 export const DEFAULT_SLIPWAY_RUNTIME_HEALTH_INITIAL_DELAY_MS = 30_000;
 export const DEFAULT_SLIPWAY_RUNTIME_DIAGNOSTIC_SEND_TIMEOUT_MS = 1_500;
 export const DEFAULT_SLIPWAY_RUNTIME_DIAGNOSTIC_REMOTE_BACKOFF_MS = 30_000;
 
+const MAX_STAGE_LENGTH = 128;
+const MAX_COMPONENT_LENGTH = 96;
+const MAX_CODE_LENGTH = 96;
+const MAX_MESSAGE_LENGTH = 500;
+const MAX_ATTRS = 32;
+const MAX_ATTR_KEY_LENGTH = 64;
+const MAX_ATTR_VALUE_LENGTH = 256;
+
+export type LiskovRuntimeDiagnosticStatus = "started" | "succeeded" | "failed" | "skipped" | "info";
+export type LiskovRuntimeDiagnosticAttrs = Record<string, string | number | boolean | null>;
+export type LiskovRuntimeFatalKind =
+  | "bootstrap"
+  | "application_start"
+  | "uncaught_exception"
+  | "unhandled_rejection"
+  | "explicit";
+
 export interface SlipwayRuntimeDiagnostic {
   phase?: "slipway_runtime_env" | "lockbox_secrets" | "slipway_logging" | "refresh_failed" | "skipped";
   stage: string;
-  status: "started" | "succeeded" | "failed" | "skipped" | "info";
+  status: LiskovRuntimeDiagnosticStatus;
   sequence: number;
   timestampMs: number;
   ok: boolean;
   component?: string;
   code?: string;
   message?: string;
-  attrs?: Record<string, string | number | boolean | null>;
+  attrs?: LiskovRuntimeDiagnosticAttrs;
   valueCount?: number;
   revision?: string;
   error?: string;
 }
 
-export interface SlipwayRuntimeDiagnosticEmitter {
+export interface LiskovRuntimeDiagnosticReport {
+  stage: string;
+  status: LiskovRuntimeDiagnosticStatus;
+  component?: string;
+  code?: string;
+  message?: string;
+  attrs?: LiskovRuntimeDiagnosticAttrs;
+}
+
+export interface LiskovRuntimeFatalReport {
+  kind: LiskovRuntimeFatalKind;
+  code: string;
+  component?: string;
+  error?: unknown;
+  message?: string;
+  attrs?: LiskovRuntimeDiagnosticAttrs;
+}
+
+export interface LiskovRuntimeDiagnostics {
+  report(event: LiskovRuntimeDiagnosticReport): Promise<void>;
+  fatal(event: LiskovRuntimeFatalReport): Promise<void>;
+}
+
+export interface SlipwayRuntimeDiagnosticEmitter extends LiskovRuntimeDiagnostics {
   emit(event: Omit<SlipwayRuntimeDiagnostic, "sequence" | "timestampMs">): Promise<void>;
+  configureBootstrap(bootstrap: SlipwayRuntimeEnvConfig | undefined): void;
+  isClosed(): boolean;
 }
 
 export interface SlipwayRuntimeDiagnosticEmitterOptions {
   bootstrap?: SlipwayRuntimeEnvConfig;
+  coreUrl?: string;
+  allowInsecureHttp?: boolean;
   identityProvider?: RuntimeIdentityProvider;
   fetchImpl?: typeof fetch;
   nowMs?: () => number;
@@ -42,6 +87,7 @@ export interface SlipwayRuntimeDiagnosticEmitterOptions {
   diagnosticRemoteBackoffMs?: number;
   setTimeoutImpl?: typeof setTimeout;
   clearTimeoutImpl?: typeof clearTimeout;
+  onFatal?: () => void;
 }
 
 export interface SlipwayRuntimeHealthHandle {
@@ -55,42 +101,104 @@ export interface SlipwayRuntimeHealthOptions extends SlipwayRuntimeDiagnosticEmi
   initialDelayMs?: number;
 }
 
+export interface LiskovRuntimeDiagnosticV2Payload {
+  jobId: string;
+  processorId: string;
+  stage: string;
+  status: LiskovRuntimeDiagnosticStatus;
+  sequence: number;
+  timestampMs: number;
+  component: string | null;
+  code: string | null;
+  message: string | null;
+  attrs: LiskovRuntimeDiagnosticAttrs | null;
+}
+
 export function createSlipwayRuntimeDiagnosticEmitter(
   options: SlipwayRuntimeDiagnosticEmitterOptions = {}
 ): SlipwayRuntimeDiagnosticEmitter {
   let sequence = 0;
   let remoteDisabledUntilMs = 0;
-  return {
-    async emit(event) {
-      const timestampMs = options.nowMs?.() ?? Date.now();
-      const diagnostic = redactDiagnostic({
-        ...event,
-        sequence: sequence++,
-        timestampMs
-      });
-      if (options.diagnostics) {
-        try {
-          await promiseWithTimeout(
-            Promise.resolve(options.diagnostics(diagnostic)),
-            diagnosticSendTimeoutMs(options),
-            "Local Slipway runtime diagnostic callback",
-            options
-          );
-        } catch {
-          // Local diagnostics are observability only.
-        }
-      }
-      const bootstrap = options.bootstrap;
-      if (!canSendRemoteDiagnostic(options) || !bootstrap) return;
-      if (timestampMs < remoteDisabledUntilMs) return;
-      try {
-        await sendSlipwayRuntimeDiagnostic({ ...options, bootstrap, diagnostic });
-      } catch {
-        remoteDisabledUntilMs = (options.nowMs?.() ?? Date.now()) + diagnosticRemoteBackoffMs(options);
-        // Remote diagnostics are best-effort and must not mask runtime bootstrap errors.
-      }
+  let bootstrap = options.bootstrap;
+  let closed = false;
+  let fatalPromise: Promise<void> | undefined;
+
+  const prepare = (
+    event: Omit<SlipwayRuntimeDiagnostic, "sequence" | "timestampMs">
+  ): SlipwayRuntimeDiagnostic => {
+    const timestampMs = options.nowMs?.() ?? Date.now();
+    return redactDiagnostic({
+      ...event,
+      sequence: sequence++,
+      timestampMs
+    });
+  };
+
+  const deliver = async (diagnostic: SlipwayRuntimeDiagnostic, terminal: boolean): Promise<void> => {
+    const local = sendLocalDiagnostic(options, diagnostic);
+    const remoteSend = sendRemoteDiagnostic({
+      ...options,
+      bootstrap,
+      diagnostic,
+      terminal,
+      remoteDisabledUntilMs
+    });
+    const remote = terminal
+      ? promiseWithTimeout(
+          remoteSend,
+          diagnosticSendTimeoutMs(options),
+          "Terminal Liskov runtime diagnostic attempt",
+          options
+        )
+      : remoteSend;
+    const [, remoteResult] = await Promise.allSettled([local, remote]);
+    if (remoteResult.status === "rejected" && !terminal) {
+      remoteDisabledUntilMs = (options.nowMs?.() ?? Date.now()) + diagnosticRemoteBackoffMs(options);
     }
   };
+
+  const emitter: SlipwayRuntimeDiagnosticEmitter = {
+    emit(event) {
+      if (closed) return Promise.resolve();
+      return deliver(prepare(event), false);
+    },
+    report(event) {
+      if (event.stage === "runtime.fatal" || event.stage.startsWith("runtime.fatal.")) {
+        return Promise.reject(new Error("runtime.fatal.* diagnostics are terminal and must use fatal()"));
+      }
+      if (closed) return Promise.resolve();
+      return deliver(prepare({ ...event, ok: event.status !== "failed" }), false);
+    },
+    fatal(event) {
+      if (fatalPromise) return fatalPromise;
+      closed = true;
+      try {
+        options.onFatal?.();
+      } catch {
+        // Cleanup must not displace the terminal report or first-call-wins promise.
+      }
+      const message = event.message ?? (event.error === undefined ? undefined : diagnosticErrorMessage(event.error));
+      const diagnostic = prepare({
+        stage: `runtime.fatal.${event.kind}`,
+        status: "failed",
+        ok: false,
+        component: event.component,
+        code: event.code,
+        message,
+        error: message,
+        attrs: event.attrs
+      });
+      fatalPromise = deliver(diagnostic, true);
+      return fatalPromise;
+    },
+    configureBootstrap(value) {
+      bootstrap = value;
+    },
+    isClosed() {
+      return closed;
+    }
+  };
+  return emitter;
 }
 
 export function startSlipwayRuntimeHealth(options: SlipwayRuntimeHealthOptions = {}): SlipwayRuntimeHealthHandle {
@@ -104,6 +212,7 @@ export function startSlipwayRuntimeHealth(options: SlipwayRuntimeHealthOptions =
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const sendNow = async () => {
+    if (stopped) return;
     await emitter.emit({
       stage: "runtime.health",
       status: "info",
@@ -133,24 +242,16 @@ export function startSlipwayRuntimeHealth(options: SlipwayRuntimeHealthOptions =
 export function redactDiagnostic(diagnostic: SlipwayRuntimeDiagnostic): SlipwayRuntimeDiagnostic {
   return {
     ...diagnostic,
-    message: diagnostic.message ? redactString(diagnostic.message) : diagnostic.message,
-    error: diagnostic.error ? redactString(diagnostic.error) : diagnostic.error,
+    stage: boundedRequiredString(diagnostic.stage, MAX_STAGE_LENGTH, "stage"),
+    component: boundedOptionalString(diagnostic.component, MAX_COMPONENT_LENGTH),
+    code: boundedOptionalString(diagnostic.code, MAX_CODE_LENGTH),
+    message: diagnostic.message ? redactDiagnosticMessage(diagnostic.message) : diagnostic.message,
+    error: diagnostic.error ? redactDiagnosticMessage(diagnostic.error) : diagnostic.error,
     attrs: redactAttrs(diagnostic.attrs)
   };
 }
 
-/**
- * ADR-0003 Phase 5b: the canonical message a signed check-in covers. The runtime signs these
- * bytes with its Acurast ed25519 key; Slipway verifies the signature against the processor's
- * stored `runtimeSigner`, so a check-in no longer needs the bootstrap diagnostics token.
- *
- * This MUST stay byte-for-byte identical to the Rust `slipway_runtime_diagnostic_signed_message`
- * (slipway-executor `runtime_diagnostics.rs`): canonical JSON over the auth-bound fields only —
- * identity (`applicationId`/`policyDigest`/`deploymentId`) plus the state transition
- * (`stage`/`status`/`sequence`/`timestampMs`). `policyDigest` is lower-cased to match the
- * server's parse. The golden string is asserted in both repos' tests; change it in both or
- * signed check-ins silently fail to verify.
- */
+/** Legacy v1 canonical bytes retained for the accept-both compatibility window. */
 export function slipwayRuntimeDiagnosticRequestMessage(input: {
   applicationId: string;
   policyDigest: string;
@@ -175,17 +276,114 @@ export function slipwayRuntimeDiagnosticRequestMessage(input: {
   );
 }
 
-/**
- * ADR-0003 Phase 5b accept-both: a remote check-in can authenticate with the legacy bootstrap
- * token OR an ed25519 signature, so it's worth sending whenever we have a bootstrap plus either
- * a token or an identity provider that can sign. (Was: token-only.)
- */
+export function canonicalLiskovRuntimeDiagnosticV2Payload(
+  input: LiskovRuntimeDiagnosticV2Payload
+): LiskovRuntimeDiagnosticV2Payload {
+  const status = input.status;
+  if (!["started", "succeeded", "failed", "skipped", "info"].includes(status)) {
+    throw new Error("status is not supported");
+  }
+  if (!Number.isSafeInteger(input.sequence) || input.sequence < 0) {
+    throw new Error("sequence must be a non-negative safe integer");
+  }
+  if (!Number.isSafeInteger(input.timestampMs) || input.timestampMs <= 0) {
+    throw new Error("timestampMs must be a positive safe integer");
+  }
+  const message = boundedOptionalString(input.message ?? undefined, MAX_MESSAGE_LENGTH);
+  return {
+    jobId: boundedRequiredString(input.jobId, 256, "jobId"),
+    processorId: boundedRequiredString(input.processorId, 256, "processorId"),
+    stage: boundedRequiredString(input.stage, MAX_STAGE_LENGTH, "stage"),
+    status,
+    sequence: input.sequence,
+    timestampMs: input.timestampMs,
+    component: boundedOptionalString(input.component ?? undefined, MAX_COMPONENT_LENGTH) ?? null,
+    code: boundedOptionalString(input.code ?? undefined, MAX_CODE_LENGTH) ?? null,
+    message: message ? redactDiagnosticMessage(message) : null,
+    attrs: redactAttrs(input.attrs ?? undefined) ?? null
+  };
+}
+
+export function liskovRuntimeDiagnosticV2Message(input: LiskovRuntimeDiagnosticV2Payload): Uint8Array {
+  return Buffer.from(canonicalJson({
+    domain: LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V2,
+    ...canonicalLiskovRuntimeDiagnosticV2Payload(input)
+  }), "utf8");
+}
+
 function canSendRemoteDiagnostic(options: SlipwayRuntimeDiagnosticEmitterOptions): boolean {
+  if (options.coreUrl && options.identityProvider) return true;
   if (!options.bootstrap) return false;
   return Boolean(options.bootstrap.diagnosticsToken) || Boolean(options.identityProvider);
 }
 
-async function sendSlipwayRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitterOptions & {
+async function sendLocalDiagnostic(
+  options: SlipwayRuntimeDiagnosticEmitterOptions,
+  diagnostic: SlipwayRuntimeDiagnostic
+): Promise<void> {
+  if (!options.diagnostics) return;
+  await promiseWithTimeout(
+    Promise.resolve(options.diagnostics(diagnostic)),
+    diagnosticSendTimeoutMs(options),
+    "Local Liskov runtime diagnostic callback",
+    options
+  );
+}
+
+async function sendRemoteDiagnostic(input: SlipwayRuntimeDiagnosticEmitterOptions & {
+  bootstrap?: SlipwayRuntimeEnvConfig;
+  diagnostic: SlipwayRuntimeDiagnostic;
+  terminal: boolean;
+  remoteDisabledUntilMs: number;
+}): Promise<void> {
+  if (!canSendRemoteDiagnostic(input)) return;
+  if (!input.terminal && input.diagnostic.timestampMs < input.remoteDisabledUntilMs) return;
+  if (input.coreUrl && input.identityProvider) {
+    await sendLiskovRuntimeDiagnosticV2({
+      ...input,
+      coreUrl: input.coreUrl,
+      identityProvider: input.identityProvider
+    });
+    return;
+  }
+  if (input.bootstrap) await sendSlipwayRuntimeDiagnosticV1({ ...input, bootstrap: input.bootstrap });
+}
+
+async function sendLiskovRuntimeDiagnosticV2(input: SlipwayRuntimeDiagnosticEmitterOptions & {
+  coreUrl: string;
+  identityProvider: RuntimeIdentityProvider;
+  diagnostic: SlipwayRuntimeDiagnostic;
+}): Promise<void> {
+  const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+  if (typeof fetchImpl !== "function") return;
+  const url = new URL("/api/jobs/runtime-diagnostics", input.coreUrl);
+  assertSecureRuntimeUrl(url, input.allowInsecureHttp, "Liskov runtime diagnostics");
+  const identity = await input.identityProvider.resolveIdentity({ requireEncryptionKey: false });
+  const payload = canonicalLiskovRuntimeDiagnosticV2Payload({
+    jobId: identity.jobId,
+    processorId: identity.processorId,
+    stage: input.diagnostic.stage,
+    status: input.diagnostic.status,
+    sequence: input.diagnostic.sequence,
+    timestampMs: input.diagnostic.timestampMs,
+    component: input.diagnostic.component ?? null,
+    code: input.diagnostic.code ?? null,
+    message: input.diagnostic.message ?? input.diagnostic.error ?? null,
+    attrs: {
+      ...input.diagnostic.attrs,
+      ...(input.diagnostic.valueCount === undefined ? {} : { valueCount: input.diagnostic.valueCount }),
+      ...(input.diagnostic.revision === undefined ? {} : { revision: input.diagnostic.revision })
+    }
+  });
+  const signature = await input.identityProvider.sign(liskovRuntimeDiagnosticV2Message(payload));
+  await postDiagnostic({ ...input, fetchImpl, url, body: {
+    domain: LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V2,
+    ...payload,
+    signature
+  }});
+}
+
+async function sendSlipwayRuntimeDiagnosticV1(input: SlipwayRuntimeDiagnosticEmitterOptions & {
   bootstrap: SlipwayRuntimeEnvConfig;
   diagnostic: SlipwayRuntimeDiagnostic;
 }): Promise<void> {
@@ -199,10 +397,6 @@ async function sendSlipwayRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitt
   } catch {
     identity = undefined;
   }
-  // ADR-0003 Phase 5b: sign the canonical request with the processor's ed25519 key so Slipway
-  // can authenticate against the stored runtimeSigner. Best-effort — if signing fails we fall
-  // back to the token (still sent below during the accept-both window). JSON.stringify drops
-  // the field when undefined, so token-only callers are byte-unchanged.
   let signature: string | undefined;
   if (input.identityProvider) {
     try {
@@ -220,43 +414,51 @@ async function sendSlipwayRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitt
       signature = undefined;
     }
   }
+  await postDiagnostic({ ...input, fetchImpl, url, body: {
+    domain: SLIPWAY_RUNTIME_DIAGNOSTIC_DOMAIN,
+    applicationId: input.bootstrap.applicationId,
+    policyDigest: input.bootstrap.policyDigest,
+    deploymentId: input.bootstrap.deploymentId,
+    token: input.bootstrap.diagnosticsToken,
+    signature,
+    stage: input.diagnostic.stage,
+    status: input.diagnostic.status,
+    sequence: input.diagnostic.sequence,
+    timestampMs: input.diagnostic.timestampMs,
+    jobId: identity?.jobId,
+    processorAddress: identity?.processorId,
+    component: input.diagnostic.component,
+    code: input.diagnostic.code,
+    message: input.diagnostic.message ?? input.diagnostic.error,
+    attrs: {
+      ...input.diagnostic.attrs,
+      ...(input.diagnostic.valueCount === undefined ? {} : { valueCount: input.diagnostic.valueCount }),
+      ...(input.diagnostic.revision === undefined ? {} : { revision: input.diagnostic.revision })
+    }
+  }});
+}
+
+async function postDiagnostic(input: SlipwayRuntimeDiagnosticEmitterOptions & {
+  fetchImpl: typeof fetch;
+  url: URL;
+  body: Record<string, unknown>;
+}): Promise<void> {
   const controller = typeof AbortController === "function" ? new AbortController() : undefined;
-  const fetchPromise = fetchImpl(url.toString(), {
+  const fetchPromise = input.fetchImpl(input.url.toString(), {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     signal: controller?.signal,
-    body: JSON.stringify({
-      domain: SLIPWAY_RUNTIME_DIAGNOSTIC_DOMAIN,
-      applicationId: input.bootstrap.applicationId,
-      policyDigest: input.bootstrap.policyDigest,
-      deploymentId: input.bootstrap.deploymentId,
-      token: input.bootstrap.diagnosticsToken,
-      signature,
-      stage: input.diagnostic.stage,
-      status: input.diagnostic.status,
-      sequence: input.diagnostic.sequence,
-      timestampMs: input.diagnostic.timestampMs,
-      jobId: identity?.jobId,
-      processorAddress: identity?.processorId,
-      component: input.diagnostic.component,
-      code: input.diagnostic.code,
-      message: input.diagnostic.message ?? input.diagnostic.error,
-      attrs: {
-        ...input.diagnostic.attrs,
-        ...(input.diagnostic.valueCount === undefined ? {} : { valueCount: input.diagnostic.valueCount }),
-        ...(input.diagnostic.revision === undefined ? {} : { revision: input.diagnostic.revision })
-      }
-    })
+    body: JSON.stringify(input.body)
   });
   const response = await promiseWithTimeout(
     fetchPromise,
     diagnosticSendTimeoutMs(input),
-    "Slipway runtime diagnostic send",
+    "Liskov runtime diagnostic send",
     input,
     () => controller?.abort()
   );
   if (!response.ok) {
-    throw new Error(`Slipway runtime diagnostic rejected request: ${response.status} ${(await response.text()).slice(0, 500)}`);
+    throw new Error(`Liskov runtime diagnostic rejected request: ${response.status} ${(await response.text()).slice(0, 500)}`);
   }
 }
 
@@ -304,18 +506,55 @@ function nonNegativeInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
+function charTruncate(value: string, max: number): string {
+  return [...value].slice(0, max).join("");
+}
+
+function boundedRequiredString(value: string, max: number, label: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error(`${label} must be a string`);
+  return charTruncate(normalized, max);
+}
+
+function boundedOptionalString(value: string | undefined, max: number): string | undefined {
+  const normalized = value?.trim();
+  return normalized ? charTruncate(normalized, max) : undefined;
+}
+
+function sensitiveKey(key: string): boolean {
+  return /(secret|seed|token|key|dek|cipher|signature|password|mnemonic|private)/iu.test(key);
+}
+
 function redactAttrs(attrs: SlipwayRuntimeDiagnostic["attrs"]): SlipwayRuntimeDiagnostic["attrs"] {
   if (!attrs) return undefined;
-  return Object.fromEntries(Object.entries(attrs).filter(([key, value]) => !isSensitiveAttr(key, value)));
+  const out: LiskovRuntimeDiagnosticAttrs = {};
+  for (const [rawKey, rawValue] of Object.entries(attrs).slice(0, MAX_ATTRS)) {
+    const key = charTruncate(rawKey.trim(), MAX_ATTR_KEY_LENGTH);
+    if (!key || sensitiveKey(key)) continue;
+    if (typeof rawValue === "string") {
+      out[key] = redactAttrString(key, rawValue);
+    } else if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
+      out[key] = rawValue;
+    } else if (typeof rawValue === "boolean" || rawValue === null) {
+      out[key] = rawValue;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
-function redactString(value: string): string {
-  return value.replace(/(token|secret|password|private[_-]?key|authorization)=([^,\s]+)/giu, "$1=[redacted]");
+function redactAttrString(key: string, value: string): string {
+  if (sensitiveKey(key) || /^(0x)?[0-9a-f]{64,}$/iu.test(value) || /^[A-Za-z0-9_-]{80,}$/u.test(value)) {
+    return "[redacted]";
+  }
+  return charTruncate(value, MAX_ATTR_VALUE_LENGTH);
 }
 
-function isSensitiveAttr(key: string, value: string | number | boolean | null): boolean {
-  if (typeof value !== "string") return false;
-  return /token|secret|password|private|authorization|signature|key/iu.test(key);
+function redactDiagnosticMessage(value: string): string {
+  const bounded = charTruncate(value.trim(), MAX_MESSAGE_LENGTH);
+  return bounded
+    .replace(/(0x)?[0-9a-f]{64,}/giu, "[redacted]")
+    .replace(/[A-Za-z0-9_-]{80,}/gu, "[redacted]")
+    .replace(/\b(secret|seed|token|private[_-]?key|dek|ciphertext|signature)\s*[:=]\s*[^,\s}]+/giu, "$1=[redacted]");
 }
 
 export function diagnosticErrorMessage(error: unknown): string {

@@ -14,6 +14,8 @@ import {
 } from "./blackbox-logger.js";
 import {
   isLiskovSignedBootstrapUnavailableError,
+  LiskovSignedBootstrapHttpError,
+  liskovSignedBootstrapAllowInsecureHttp,
   liskovSignedBootstrapUrls,
   loadLiskovRuntimeBootstrap,
   loadLiskovSecretBootstrap,
@@ -24,6 +26,7 @@ import {
   createSlipwayRuntimeDiagnosticEmitter,
   startSlipwayRuntimeHealth,
   type SlipwayRuntimeDiagnostic,
+  type LiskovRuntimeDiagnostics,
   type SlipwayRuntimeHealthHandle
 } from "./diagnostics.js";
 import { getFirstRuntimeEnvValue, resolveRuntimeStd, type AcurastRuntimeStd } from "./env.js";
@@ -51,6 +54,7 @@ export * from "./diagnostics.js";
 export * from "./env.js";
 export * from "./home.js";
 export * from "./lockbox.js";
+export * from "./process-failures.js";
 export * from "./proof-log-crypto.js";
 export * from "./runtime-env.js";
 
@@ -179,6 +183,7 @@ export interface BootstrapSlipwayRuntimeHandle {
   flush(): Promise<SlipwayRuntimeFlushResult>;
   stop(): void;
   refreshNow(): Promise<SlipwayRuntimeEnvLoadResult | undefined>;
+  readonly diagnostics: LiskovRuntimeDiagnostics;
   runtimeEnv?: SlipwayRuntimeEnvLoadResult;
   lockbox?: LockboxRuntimeLoadResult;
   runtimeHealth?: SlipwayRuntimeHealthHandle;
@@ -199,6 +204,7 @@ async function resolveSignedRuntimeBootstrap(input: {
   hasLockboxConfig: boolean;
   setSlipwayConfig(config: NonNullable<ReturnType<typeof readSlipwayRuntimeEnvConfig>>): void;
   setLockboxConfig(config: NonNullable<ReturnType<typeof readLockboxRuntimeConfig>>): void;
+  setFailureStage(stage: BootstrapFailureStage): void;
 }): Promise<void> {
   const signedOptions = {
     env: input.env,
@@ -217,6 +223,7 @@ async function resolveSignedRuntimeBootstrap(input: {
   };
   const urls = liskovSignedBootstrapUrls(signedOptions);
   await allowBootstrapHostnames(input.std, [urlHostOrNull(urls.coreUrl), urlHostOrNull(urls.secretsUrl)]);
+  input.setFailureStage("runtime_bootstrap");
   const runtimeBootstrap = await loadSignedRuntimeBootstrapOrSkip(input.mode, signedOptions);
   if (!runtimeBootstrap) return;
   if (runtimeBootstrap.runtimeEnvConfig !== undefined) {
@@ -236,6 +243,7 @@ async function resolveSignedRuntimeBootstrap(input: {
   // whole job down even though core had said secrets.required=false).
   const secretsRequired =
     runtimeBootstrap.secretsRequired || input.requestedSecretsMode === "required";
+  input.setFailureStage("secret_bootstrap");
   const secretBootstrap = await loadSignedSecretBootstrapOrSkip(
     input.mode,
     { ...signedOptions, secretsUrl: runtimeBootstrap.secretsUrl },
@@ -274,6 +282,13 @@ async function loadSignedSecretBootstrapOrSkip(
   }
 }
 
+export type BootstrapFailureStage =
+  | "runtime_bootstrap"
+  | "secret_bootstrap"
+  | "runtime_env"
+  | "lockbox"
+  | "logging";
+
 export async function bootstrapSlipwayRuntime(
   options: BootstrapSlipwayRuntimeOptions = {}
 ): Promise<BootstrapSlipwayRuntimeHandle> {
@@ -288,12 +303,45 @@ export async function bootstrapSlipwayRuntime(
   let slipwayConfig = readSlipwayRuntimeEnvConfig(legacyBootstrapLookup);
   let lockboxConfig = readLockboxRuntimeConfig(legacyBootstrapLookup);
   const startedAtMs = options.nowMs?.() ?? Date.now();
+  const signedUrls = liskovSignedBootstrapUrls({
+    env,
+    std,
+    environment: options.environment,
+    coreUrl: options.bootstrap?.coreUrl,
+    secretsUrl: options.bootstrap?.secretsUrl
+  });
   const shouldResolveSignedBootstrap =
     signedBootstrapMode !== "off" && (
       signedBootstrapMode === "signed" ||
       (slipwayConfig === undefined && lockboxConfig === undefined) ||
       (lockboxConfig === undefined && options.secrets?.mode !== undefined && options.secrets.mode !== "off")
     );
+  const fatalCleanup: Array<() => void> = [];
+  let failureStage: BootstrapFailureStage = "runtime_bootstrap";
+  const diagnostics = createSlipwayRuntimeDiagnosticEmitter({
+    bootstrap: slipwayConfig,
+    coreUrl: shouldResolveSignedBootstrap ? signedUrls.coreUrl : undefined,
+    allowInsecureHttp: shouldResolveSignedBootstrap
+      ? liskovSignedBootstrapAllowInsecureHttp({
+          env,
+          std,
+          allowInsecureHttp: options.bootstrap?.allowInsecureHttp
+        })
+      : undefined,
+    identityProvider,
+    fetchImpl: options.fetchImpl,
+    nowMs: options.nowMs,
+    diagnostics: options.diagnostics,
+    diagnosticSendTimeoutMs: options.diagnosticSendTimeoutMs ?? options.runtimeHealth?.sendTimeoutMs,
+    diagnosticRemoteBackoffMs: options.diagnosticRemoteBackoffMs,
+    setTimeoutImpl: options.setTimeoutImpl,
+    clearTimeoutImpl: options.clearTimeoutImpl,
+    onFatal: () => {
+      for (const stop of fatalCleanup) stop();
+    }
+  });
+
+  try {
   if (shouldResolveSignedBootstrap) {
     await resolveSignedRuntimeBootstrap({
       mode: signedBootstrapMode,
@@ -312,9 +360,14 @@ export async function bootstrapSlipwayRuntime(
       },
       setLockboxConfig: (config) => {
         lockboxConfig ??= config;
+      },
+      setFailureStage: (stage) => {
+        failureStage = stage;
       }
     });
   }
+  diagnostics.configureBootstrap(slipwayConfig);
+  failureStage = "runtime_env";
   const secretsMode = options.secrets?.mode ?? (lockboxConfig === undefined ? "off" : "required");
   const loggingMode = options.logging?.mode ?? "background";
   await allowBootstrapHostnames(std, [
@@ -322,18 +375,6 @@ export async function bootstrapSlipwayRuntime(
     urlHostOrNull(lockboxConfig?.lockboxUrl),
     ...blackboxLogHostnames((name) => env[name])
   ]);
-  const diagnostics = createSlipwayRuntimeDiagnosticEmitter({
-    bootstrap: slipwayConfig,
-    identityProvider,
-    fetchImpl: options.fetchImpl,
-    nowMs: options.nowMs,
-    diagnostics: options.diagnostics,
-    diagnosticSendTimeoutMs: options.diagnosticSendTimeoutMs ?? options.runtimeHealth?.sendTimeoutMs,
-    diagnosticRemoteBackoffMs: options.diagnosticRemoteBackoffMs,
-    setTimeoutImpl: options.setTimeoutImpl,
-    clearTimeoutImpl: options.clearTimeoutImpl
-  });
-
   await diagnostics.emit({
     stage: "runtime.start",
     status: "info",
@@ -402,6 +443,7 @@ export async function bootstrapSlipwayRuntime(
       await logging.refresh();
     }
   });
+  fatalCleanup.push(() => secrets.stop());
 
   if (slipwayConfig !== undefined) {
     refreshHandle = startSlipwayRuntimeEnvRefresh({
@@ -415,6 +457,7 @@ export async function bootstrapSlipwayRuntime(
       setTimeoutImpl: options.setTimeoutImpl,
       clearTimeoutImpl: options.clearTimeoutImpl
     });
+    fatalCleanup.push(() => refreshHandle?.stop());
     await diagnostics.emit({
       phase: "slipway_runtime_env",
       stage: "slipway.runtime_env.request",
@@ -432,11 +475,13 @@ export async function bootstrapSlipwayRuntime(
   }
 
   if (secretsMode === "required") {
+    failureStage = "lockbox";
     await secrets.loadRequired();
   } else if (secretsMode === "background") {
     secrets.startBackground();
   }
 
+  failureStage = "logging";
   await logging.refresh();
 
   if (slipwayConfig !== undefined) {
@@ -453,10 +498,12 @@ export async function bootstrapSlipwayRuntime(
       setTimeoutImpl: options.setTimeoutImpl,
       clearTimeoutImpl: options.clearTimeoutImpl
     });
+    fatalCleanup.push(() => runtimeHealthHandle?.stop());
   }
 
   return {
     home,
+    diagnostics,
     get runtimeEnv() {
       return runtimeEnv;
     },
@@ -505,6 +552,7 @@ export async function bootstrapSlipwayRuntime(
       throw new SlipwayRuntimeNotReadyError(status);
     },
     async log(event, details = {}, logOptions = {}) {
+      if (diagnostics.isClosed()) return;
       await logging.log(event, details, logOptions);
     },
     async flush() {
@@ -523,11 +571,48 @@ export async function bootstrapSlipwayRuntime(
       return result;
     }
   };
+  } catch (error) {
+    await diagnostics.fatal({
+      kind: "bootstrap",
+      code: classifyBootstrapFailure(error, failureStage),
+      component: options.component ?? "runtime-bootstrap",
+      error
+    });
+    throw error;
+  }
 }
 
 export const bootstrapLiskovRuntime = bootstrapSlipwayRuntime;
 export type BootstrapLiskovRuntimeOptions = BootstrapSlipwayRuntimeOptions;
 export type BootstrapLiskovRuntimeHandle = BootstrapSlipwayRuntimeHandle;
+
+export function classifyLiskovRuntimeBootstrapFailure(
+  error: unknown,
+  stage: BootstrapFailureStage = "runtime_bootstrap"
+): string {
+  return classifyBootstrapFailure(error, stage);
+}
+
+function classifyBootstrapFailure(error: unknown, stage: BootstrapFailureStage): string {
+  const message = safeErrorMessage(error);
+  if (/response encryption key is required/iu.test(message)) {
+    return "lockbox_response_key_missing";
+  }
+  if (stage === "runtime_bootstrap") {
+    if (error instanceof LiskovSignedBootstrapHttpError) {
+      return validatedRuntimeErrorCode(error.errorCode) ?? "runtime_bootstrap_rejected";
+    }
+    return "runtime_bootstrap_failed";
+  }
+  if (stage === "secret_bootstrap") return "secret_bootstrap_failed";
+  if (stage === "runtime_env") return "runtime_env_request_failed";
+  if (stage === "lockbox") return "lockbox_secret_request_failed";
+  return "runtime_logging_required_failed";
+}
+
+function validatedRuntimeErrorCode(value: string | undefined): string | undefined {
+  return value && /^[a-z][a-z0-9_]{0,95}$/u.test(value) ? value : undefined;
+}
 
 type SlipwayRuntimeLogWriter = (event: string, details?: Record<string, unknown>) => Promise<void>;
 

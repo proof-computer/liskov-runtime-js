@@ -1,0 +1,53 @@
+{
+  "golden": {
+    "input": {
+      "jobId": "job-1",
+      "processorId": "processor-1",
+      "stage": "runtime.fatal.application_start",
+      "status": "failed",
+      "sequence": 7,
+      "timestampMs": 1719230000000,
+      "component": "uptime-prober",
+      "code": "application_start_failed",
+      "message": "boom",
+      "attrs": {
+        "attempt": 2,
+        "safe": "ok"
+      }
+    },
+    "message": "{\"attrs\":{\"attempt\":2,\"safe\":\"ok\"},\"code\":\"application_start_failed\",\"component\":\"uptime-prober\",\"domain\":\"proof.liskov.runtime-diagnostic.v2\",\"jobId\":\"job-1\",\"message\":\"boom\",\"processorId\":\"processor-1\",\"sequence\":7,\"stage\":\"runtime.fatal.application_start\",\"status\":\"failed\",\"timestampMs\":1719230000000}"
+  },
+  "redaction": {
+    "input": {
+      "jobId": " job-2 ",
+      "processorId": " processor-2 ",
+      "stage": " runtime.fatal.explicit ",
+      "status": "failed",
+      "sequence": 8,
+      "timestampMs": 1719230000001,
+      "component": " worker ",
+      "code": " explicit_failure ",
+      "message": "startup failed token=hello digest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "attrs": {
+        "apiToken": "do-not-send",
+        "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "region": "eu"
+      }
+    },
+    "normalized": {
+      "jobId": "job-2",
+      "processorId": "processor-2",
+      "stage": "runtime.fatal.explicit",
+      "status": "failed",
+      "sequence": 8,
+      "timestampMs": 1719230000001,
+      "component": "worker",
+      "code": "explicit_failure",
+      "message": "startup failed token=[redacted] digest [redacted]",
+      "attrs": {
+        "digest": "[redacted]",
+        "region": "eu"
+      }
+    }
+  }
+}

@@ -1,11 +1,11 @@
 # Security Checklist
 
 Use this checklist before cutting a public
-`@proof-computer/slipway-runtime` tag.
+`@proof-computer/liskov-runtime` tag.
 
 ## Runtime Authority
 
-- Runtime jobs must not receive Slipway server control tokens.
+- Runtime jobs must not receive Liskov server control tokens.
 - Runtime jobs must not receive Lockbox control tokens.
 - Runtime jobs sign runtime-env and Lockbox requests with the Acurast
   job-owned Ed25519 signer.
@@ -41,14 +41,18 @@ Use this checklist before cutting a public
   names, and boolean capability flags.
 - Diagnostics must redact string attributes that look like tokens, secrets,
   private keys, signatures, passwords, or authorization headers.
-- `runtime.start` must not expose compact bootstrap payloads or plaintext env
+- `runtime.start` and `runtime.fatal.*` must not expose compact bootstrap payloads or plaintext env
   values.
+- V2 diagnostic signatures must cover the normalized job and processor
+  identities plus stage, status, sequence, timestamp, component, code, message,
+  and attributes. Terminal delivery must remain bounded even when identity,
+  signing, or transport hangs.
 - Slipway logging batches must contain encrypted log records only.
 
 ## Package Artifact
 
-- `package.json` must be public-ready: `private: false`, version `0.3.3`, and
-  repository metadata pointing at `proof-computer/slipway-runtime-js`.
+- `package.json` must be public-ready: `private: false`, version `0.3.22`, and
+  repository metadata pointing at `proof-computer/liskov-runtime-js`.
 - The package `files` allowlist must include only `dist`, `README.md`, and
   `SECURITY.md`.
 - `npm pack --dry-run --json` must show no source files, tests, local env,

@@ -41,6 +41,15 @@ adapter unwraps the original 2xx status and JSON before bootstrap, Lockbox, or
 Blackbox callers see it; ordinary fetch transports and servers that do not
 recognize the opt-in header retain their existing behavior.
 
+Runtime v0.3.22 adds identity-bound v2 diagnostics and a terminal application
+boundary. `handle.diagnostics.report(...)` sends ordinary signed events, while
+`handle.diagnostics.fatal(...)` is first-call-wins, closes health and logging,
+and makes one bounded signed attempt before the caller terminates. Applications
+can install `installLiskovRuntimeProcessFailureHandlers(...)`, attach the handle
+immediately after bootstrap, and choose an explicit `"continue"` or `"exit"`
+policy for unhandled rejections. Bootstrap failures after identity resolution
+are reported even when bootstrap never returns a handle.
+
 ## Minimal Entrypoint
 
 Use `bootstrapSlipwayRuntime()` before importing Application code:
