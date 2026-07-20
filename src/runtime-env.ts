@@ -32,6 +32,7 @@ export interface SlipwayRuntimeEnvConfig {
   applicationId: string;
   policyDigest: string;
   deploymentId: string;
+  runtimeInstanceId?: string;
   diagnosticsToken?: string;
   runtimeHealth?: SlipwayRuntimeHealthConfig;
   allowInsecureHttp?: boolean;

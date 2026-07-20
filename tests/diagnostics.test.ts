@@ -6,7 +6,9 @@ import type { RuntimeIdentityProvider } from "../src/acurast.js";
 import {
   createSlipwayRuntimeDiagnosticEmitter,
   canonicalLiskovRuntimeDiagnosticV2Payload,
+  canonicalLiskovRuntimeDiagnosticV3Payload,
   liskovRuntimeDiagnosticV2Message,
+  liskovRuntimeDiagnosticV3Message,
   startSlipwayRuntimeHealth,
   slipwayRuntimeDiagnosticRequestMessage
 } from "../src/diagnostics.js";
@@ -290,5 +292,72 @@ describe("identity-bound v2 terminal diagnostics", () => {
     releaseFirst?.();
     await Promise.all([inFlight, fatal]);
     assert.deepEqual(observed, [0, 1]);
+  });
+});
+
+describe("runtime-instance v3 diagnostics", () => {
+  it("matches the canonical v3 byte vector", () => {
+    const payload = canonicalLiskovRuntimeDiagnosticV3Payload({
+      jobId: "job-1",
+      processorId: "processor-1",
+      runtimeInstanceId: "instance-2",
+      stage: "runtime.health",
+      status: "info",
+      sequence: 0,
+      timestampMs: FIXED_NOW,
+      component: "runtime-health",
+      code: null,
+      message: null,
+      attrs: { ready: true }
+    });
+    assert.equal(
+      Buffer.from(liskovRuntimeDiagnosticV3Message(payload)).toString("utf8"),
+      '{"attrs":{"ready":true},"code":null,"component":"runtime-health","domain":"proof.liskov.runtime-diagnostic.v3","jobId":"job-1","message":null,"processorId":"processor-1","runtimeInstanceId":"instance-2","sequence":0,"stage":"runtime.health","status":"info","timestampMs":1719230000000}'
+    );
+  });
+
+  it("uses v3 when bootstrap returns an instance and v2 for an older backend", async () => {
+    const calls: RecordedCall[] = [];
+    const signed: string[] = [];
+    const emitter = createSlipwayRuntimeDiagnosticEmitter({
+      coreUrl: "https://liskov.test",
+      bootstrap: baseBootstrap({ runtimeInstanceId: "instance-new" }),
+      identityProvider: recordingIdentityProvider(signed),
+      fetchImpl: recordingFetch(calls),
+      nowMs: () => FIXED_NOW
+    });
+    await emitter.report({ stage: "runtime.health", status: "info" });
+    assert.equal(calls[0].body.domain, "proof.liskov.runtime-diagnostic.v3");
+    assert.equal(calls[0].body.runtimeInstanceId, "instance-new");
+    assert.match(signed[0], /"runtimeInstanceId":"instance-new"/u);
+
+    const oldCalls: RecordedCall[] = [];
+    const oldEmitter = createSlipwayRuntimeDiagnosticEmitter({
+      coreUrl: "https://liskov.test",
+      bootstrap: baseBootstrap(),
+      identityProvider: recordingIdentityProvider([]),
+      fetchImpl: recordingFetch(oldCalls),
+      nowMs: () => FIXED_NOW
+    });
+    await oldEmitter.report({ stage: "runtime.health", status: "info" });
+    assert.equal(oldCalls[0].body.domain, "proof.liskov.runtime-diagnostic.v2");
+    assert.equal(oldCalls[0].body.runtimeInstanceId, undefined);
+  });
+
+  it("lets separate process emitters both begin at sequence zero", async () => {
+    const first: RecordedCall[] = [];
+    const second: RecordedCall[] = [];
+    for (const calls of [first, second]) {
+      const emitter = createSlipwayRuntimeDiagnosticEmitter({
+        coreUrl: "https://liskov.test",
+        bootstrap: baseBootstrap({ runtimeInstanceId: calls === first ? "instance-a" : "instance-b" }),
+        identityProvider: recordingIdentityProvider([]),
+        fetchImpl: recordingFetch(calls),
+        nowMs: () => FIXED_NOW
+      });
+      await emitter.report({ stage: "runtime.start", status: "started" });
+    }
+    assert.equal(first[0].body.sequence, 0);
+    assert.equal(second[0].body.sequence, 0);
   });
 });

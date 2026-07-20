@@ -50,6 +50,13 @@ immediately after bootstrap, and choose an explicit `"continue"` or `"exit"`
 policy for unhandled rejections. Bootstrap failures after identity resolution
 are reported even when bootstrap never returns a handle.
 
+Runtime v0.3.23 treats each process boot within an Acurast registration as a
+distinct runtime instance. The SDK creates and signs one runtime-bootstrap
+nonce per process and reuses it across HTTP retries. New backends return that
+nonce as `runtimeInstanceId`, which the SDK binds into signed
+`proof.liskov.runtime-diagnostic.v3` events; older responses remain supported
+through the v2 diagnostic fallback.
+
 ## Minimal Entrypoint
 
 Use `bootstrapSlipwayRuntime()` before importing Application code:

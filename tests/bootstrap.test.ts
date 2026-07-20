@@ -233,7 +233,8 @@ describe("top-level Slipway runtime bootstrap", () => {
       assert.equal(runtimeBootstrapMessage.applicationId, undefined);
       assert.equal(secretBootstrapMessage.domain, "proof.liskov.secret-bootstrap-request.v1");
       assert.equal(secretBootstrapMessage.responseEncryptionKey, "ab".repeat(33));
-      assert.equal(runtimeDiagnosticMessage.domain, "proof.liskov.runtime-diagnostic.v2");
+      assert.equal(runtimeDiagnosticMessage.domain, "proof.liskov.runtime-diagnostic.v3");
+      assert.equal(runtimeDiagnosticMessage.runtimeInstanceId, "07".repeat(16));
       assert.equal(runtimeDiagnosticMessage.stage, "runtime.start");
       const startDiagnostic = diagnosticBodies.find((body) => body.stage === "runtime.start");
       assert.ok(startDiagnostic);
@@ -651,11 +652,14 @@ describe("top-level Slipway runtime bootstrap", () => {
     // fires instead of crashing on the first attempt.
     const env: Record<string, string | undefined> = {};
     const sleeps: number[] = [];
+    const signedMessages: string[] = [];
+    const runtimeBootstrapBodies: string[] = [];
     let runtimeBootstrapAttempts = 0;
     const adapterFetch = createAcurastHttpPostFetch({
       httpPOST(url, _body, _headers, onSuccess, onError) {
         const parsed = new URL(url);
         if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
+          runtimeBootstrapBodies.push(_body);
           runtimeBootstrapAttempts += 1;
           if (runtimeBootstrapAttempts === 1) {
             onError(
@@ -684,7 +688,7 @@ describe("top-level Slipway runtime bootstrap", () => {
         secretsUrl: "https://secrets.liskov.test",
         retry: { initialDelayMs: 5, intervalMs: 5, maxElapsedMs: 100, maxAttempts: 3 }
       },
-      identityProvider: fakeIdentityProvider(),
+      identityProvider: fakeIdentityProvider(plaintextPayload(), { signedMessages }),
       nowMs: () => 1_000,
       setTimeoutImpl: (((callback: () => void, delayMs?: number) => {
         sleeps.push(delayMs ?? 0);
@@ -695,6 +699,12 @@ describe("top-level Slipway runtime bootstrap", () => {
     });
     try {
       assert.equal(runtimeBootstrapAttempts, 2);
+      assert.equal(runtimeBootstrapBodies.length, 2);
+      assert.equal(runtimeBootstrapBodies[0], runtimeBootstrapBodies[1]);
+      assert.equal(
+        signedMessages.filter((message) => JSON.parse(message).domain === "proof.liskov.runtime-bootstrap-request.v1").length,
+        1
+      );
       assert.equal(sleeps[0], 5);
       assert.equal(handle.status().ready, true);
       assert.equal(env.API_TOKEN, "secret");
@@ -1662,6 +1672,7 @@ function liskovRuntimeBootstrapResponse(): Record<string, unknown> {
     deploymentId: "42",
     jobId: "job-1",
     processorId: "processor-1",
+    runtimeInstanceId: "07".repeat(16),
     slipwayUrl: "https://slipway.test",
     runtimeEnv: {
       enabled: true,

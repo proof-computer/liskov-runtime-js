@@ -47,11 +47,14 @@ Use this checklist before cutting a public
   identities plus stage, status, sequence, timestamp, component, code, message,
   and attributes. Terminal delivery must remain bounded even when identity,
   signing, or transport hangs.
+- V3 diagnostic signatures must additionally bind `runtimeInstanceId` from the
+  signed runtime-bootstrap response. Bootstrap transport retries must reuse one
+  nonce and signature for the lifetime of the process boot.
 - Slipway logging batches must contain encrypted log records only.
 
 ## Package Artifact
 
-- `package.json` must be public-ready: `private: false`, version `0.3.22`, and
+- `package.json` must be public-ready: `private: false`, version `0.3.23`, and
   repository metadata pointing at `proof-computer/liskov-runtime-js`.
 - The package `files` allowlist must include only `dist`, `README.md`, and
   `SECURITY.md`.

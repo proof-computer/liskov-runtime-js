@@ -8,6 +8,7 @@ import {
 
 export const SLIPWAY_RUNTIME_DIAGNOSTIC_DOMAIN = "proof.slipway.runtime-diagnostic.v1";
 export const LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V2 = "proof.liskov.runtime-diagnostic.v2";
+export const LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V3 = "proof.liskov.runtime-diagnostic.v3";
 export const DEFAULT_SLIPWAY_RUNTIME_HEALTH_INTERVAL_MS = 30_000;
 export const DEFAULT_SLIPWAY_RUNTIME_HEALTH_INITIAL_DELAY_MS = 30_000;
 export const DEFAULT_SLIPWAY_RUNTIME_DIAGNOSTIC_SEND_TIMEOUT_MS = 1_500;
@@ -112,6 +113,10 @@ export interface LiskovRuntimeDiagnosticV2Payload {
   code: string | null;
   message: string | null;
   attrs: LiskovRuntimeDiagnosticAttrs | null;
+}
+
+export interface LiskovRuntimeDiagnosticV3Payload extends LiskovRuntimeDiagnosticV2Payload {
+  runtimeInstanceId: string;
 }
 
 export function createSlipwayRuntimeDiagnosticEmitter(
@@ -311,6 +316,22 @@ export function liskovRuntimeDiagnosticV2Message(input: LiskovRuntimeDiagnosticV
   }), "utf8");
 }
 
+export function canonicalLiskovRuntimeDiagnosticV3Payload(
+  input: LiskovRuntimeDiagnosticV3Payload
+): LiskovRuntimeDiagnosticV3Payload {
+  return {
+    ...canonicalLiskovRuntimeDiagnosticV2Payload(input),
+    runtimeInstanceId: boundedRequiredString(input.runtimeInstanceId, 256, "runtimeInstanceId")
+  };
+}
+
+export function liskovRuntimeDiagnosticV3Message(input: LiskovRuntimeDiagnosticV3Payload): Uint8Array {
+  return Buffer.from(canonicalJson({
+    domain: LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V3,
+    ...canonicalLiskovRuntimeDiagnosticV3Payload(input)
+  }), "utf8");
+}
+
 function canSendRemoteDiagnostic(options: SlipwayRuntimeDiagnosticEmitterOptions): boolean {
   if (options.coreUrl && options.identityProvider) return true;
   if (!options.bootstrap) return false;
@@ -339,7 +360,7 @@ async function sendRemoteDiagnostic(input: SlipwayRuntimeDiagnosticEmitterOption
   if (!canSendRemoteDiagnostic(input)) return;
   if (!input.terminal && input.diagnostic.timestampMs < input.remoteDisabledUntilMs) return;
   if (input.coreUrl && input.identityProvider) {
-    await sendLiskovRuntimeDiagnosticV2({
+    await sendLiskovRuntimeDiagnostic({
       ...input,
       coreUrl: input.coreUrl,
       identityProvider: input.identityProvider
@@ -349,7 +370,7 @@ async function sendRemoteDiagnostic(input: SlipwayRuntimeDiagnosticEmitterOption
   if (input.bootstrap) await sendSlipwayRuntimeDiagnosticV1({ ...input, bootstrap: input.bootstrap });
 }
 
-async function sendLiskovRuntimeDiagnosticV2(input: SlipwayRuntimeDiagnosticEmitterOptions & {
+async function sendLiskovRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitterOptions & {
   coreUrl: string;
   identityProvider: RuntimeIdentityProvider;
   diagnostic: SlipwayRuntimeDiagnostic;
@@ -375,10 +396,20 @@ async function sendLiskovRuntimeDiagnosticV2(input: SlipwayRuntimeDiagnosticEmit
       ...(input.diagnostic.revision === undefined ? {} : { revision: input.diagnostic.revision })
     }
   });
-  const signature = await input.identityProvider.sign(liskovRuntimeDiagnosticV2Message(payload));
+  const runtimeInstanceId = input.bootstrap?.runtimeInstanceId;
+  const v3Payload = runtimeInstanceId === undefined
+    ? undefined
+    : canonicalLiskovRuntimeDiagnosticV3Payload({ ...payload, runtimeInstanceId });
+  const signature = await input.identityProvider.sign(
+    v3Payload === undefined
+      ? liskovRuntimeDiagnosticV2Message(payload)
+      : liskovRuntimeDiagnosticV3Message(v3Payload)
+  );
   await postDiagnostic({ ...input, fetchImpl, url, body: {
-    domain: LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V2,
-    ...payload,
+    domain: v3Payload === undefined
+      ? LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V2
+      : LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V3,
+    ...(v3Payload ?? payload),
     signature
   }});
 }

@@ -98,6 +98,7 @@ export interface LiskovRuntimeBootstrapResponse {
   deploymentId: string;
   jobId: string;
   processorId: string;
+  runtimeInstanceId?: string;
   slipwayUrl: string;
   runtimeEnv?: {
     enabled?: boolean;
@@ -287,13 +288,15 @@ export async function loadLiskovRuntimeBootstrap(
   const urls = liskovSignedBootstrapUrls(input);
   const allowInsecureHttp = liskovSignedBootstrapAllowInsecureHttp(input);
   const requestTtlMs = liskovSignedBootstrapRequestTtlMs(input);
-  const { request, response } = await retrySignedBootstrapRequest(input, async () => {
-    const request = await buildLiskovRuntimeBootstrapRequest({
-      identityProvider: input.identityProvider,
-      nowMs: input.nowMs?.() ?? Date.now(),
-      randomBytes: input.randomBytes,
-      requestTtlMs
-    });
+  // A runtime instance is one process boot, not one transport attempt. Build
+  // and sign the request once so every HTTP retry presents the same nonce.
+  const request = await buildLiskovRuntimeBootstrapRequest({
+    identityProvider: input.identityProvider,
+    nowMs: input.nowMs?.() ?? Date.now(),
+    randomBytes: input.randomBytes,
+    requestTtlMs
+  });
+  const response = await retrySignedBootstrapRequest(input, async () => {
     const response = parseLiskovRuntimeBootstrapResponse(await postSignedBootstrapRequest({
       fetchImpl,
       url: new URL("/api/jobs/runtime-bootstrap", urls.coreUrl),
@@ -301,7 +304,7 @@ export async function loadLiskovRuntimeBootstrap(
       label: "Liskov runtime bootstrap",
       request
     }));
-    return { request, response };
+    return response;
   });
   assertRuntimeBootstrapBinding({ request, response });
   const runtimeEnvConfig = response.runtimeEnv?.enabled === false
@@ -311,6 +314,7 @@ export async function loadLiskovRuntimeBootstrap(
         applicationId: response.applicationId,
         policyDigest: response.policyDigest,
         deploymentId: response.deploymentId,
+        runtimeInstanceId: response.runtimeInstanceId,
         allowInsecureHttp,
         requestTtlMs
       };
@@ -384,6 +388,7 @@ export function parseLiskovRuntimeBootstrapResponse(value: unknown): LiskovRunti
     deploymentId: requiredString(record, "deploymentId"),
     jobId: requiredString(record, "jobId"),
     processorId: requiredString(record, "processorId"),
+    runtimeInstanceId: optionalString(record, "runtimeInstanceId"),
     slipwayUrl: requiredString(record, "slipwayUrl"),
     runtimeEnv: runtimeEnv === undefined
       ? undefined
