@@ -9,8 +9,8 @@ Use this checklist before cutting a public
 - Runtime jobs must not receive Lockbox control tokens.
 - Runtime jobs sign runtime-env and Lockbox requests with the Acurast
   job-owned Ed25519 signer.
-- Signed requests must bind application id, policy digest, deployment id, job
-  id, processor id, nonce, and expiry.
+- Signed v2 requests must bind Application UID, compatibility application id,
+  policy digest, deployment id, job id, processor id, nonce, and expiry.
 
 ## Secret Handling
 
@@ -20,6 +20,8 @@ Use this checklist before cutting a public
 - Lockbox payloads must be encrypted to the job response encryption key.
 - Lockbox encrypted payload digest and plaintext digest must be verified before
   installing secrets.
+- Lockbox v2 encrypted payloads must verify the canonical response-AAD digest
+  and the decrypted Application UID/application-id binding before installation.
 - Lockbox plaintext payload fields must match the signed request and response.
 - File-target secret writes must stay under the configured base directory and
   use mode `0600`.
@@ -50,11 +52,14 @@ Use this checklist before cutting a public
 - V3 diagnostic signatures must additionally bind `runtimeInstanceId` from the
   signed runtime-bootstrap response. Bootstrap transport retries must reuse one
   nonce and signature for the lifetime of the process boot.
+- V4 diagnostic signatures must additionally bind the authenticated
+  `applicationUid`; a UID-bearing bootstrap response must never downgrade to a
+  v2 or v3 diagnostic.
 - Slipway logging batches must contain encrypted log records only.
 
 ## Package Artifact
 
-- `package.json` must be public-ready: `private: false`, version `0.3.23`, and
+- `package.json` must be public-ready: `private: false`, version `0.3.24`, and
   repository metadata pointing at `proof-computer/liskov-runtime-js`.
 - The package `files` allowlist must include only `dist`, `README.md`, and
   `SECURITY.md`.

@@ -9,6 +9,7 @@ import { describe, it } from "node:test";
 import {
   blackboxLogConfigFingerprint,
   blackboxLogHostnames,
+  BLACKBOX_RUNTIME_LOG_CONFIG_DOMAIN_V2,
   BLACKBOX_WRITER_KEY_DERIVATION,
   createBlackboxRemoteLogger,
   decryptProofLogRecord,
@@ -230,6 +231,65 @@ describe("Blackbox runtime logger", () => {
           })
         : undefined),
       /Unsupported Blackbox writerKeyDerivation/u
+    );
+  });
+
+  it("requires both application identifiers in v2 and binds them to registration", async () => {
+    const applicationUid = "app-0123456789abcdef0123456789abcdef";
+    const dek = generateProofLogEncryptionKey();
+    const config = JSON.stringify({
+      domain: BLACKBOX_RUNTIME_LOG_CONFIG_DOMAIN_V2,
+      factoryToken: "bbx_sf_fac-uid_secret",
+      baseUrl: "https://blackbox.test",
+      applicationUid,
+      applicationId: "switchboard-validator",
+      dek
+    });
+    const parsed = readBlackboxLogConfig((name) =>
+      name === "BLACKBOX_LOG_CONFIG" ? config : undefined
+    );
+    assert.equal(parsed?.applicationUid, applicationUid);
+    assert.equal(parsed?.applicationId, "switchboard-validator");
+
+    let registrationBody: Record<string, unknown> | undefined;
+    const logger = createBlackboxRemoteLogger({
+      getConfigValue: (name) => name === "BLACKBOX_LOG_CONFIG" ? config : undefined,
+      spoolMode: "memory",
+      std: { job: { getId: () => 76976 } },
+      fetchImpl: (async (url, init) => {
+        if (String(url).endsWith("/job-sinks")) {
+          registrationBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return new Response(JSON.stringify({
+            sink: {
+              sinkId: "sink-job-76976",
+              writeUrl: "https://blackbox.test/v1/sinks/sink-job-76976/events",
+              resumeUrl: "https://blackbox.test/v1/sinks/sink-job-76976/resume"
+            },
+            chain: { nextSequence: 1, previousHash: null }
+          }), { status: 201 });
+        }
+        return acceptedBatchResponse(init);
+      }) as typeof fetch,
+      onError: (error) => assert.fail(String(error))
+    });
+    await logger("uid-bound");
+    assert.deepEqual(registrationBody, {
+      applicationId: "switchboard-validator",
+      applicationUid,
+      jobId: "76976"
+    });
+
+    assert.throws(
+      () => readBlackboxLogConfig((name) => name === "BLACKBOX_LOG_CONFIG"
+        ? JSON.stringify({
+            domain: BLACKBOX_RUNTIME_LOG_CONFIG_DOMAIN_V2,
+            factoryToken: "bbx_sf_fac-uid_secret",
+            baseUrl: "https://blackbox.test",
+            applicationId: "switchboard-validator",
+            dek
+          })
+        : undefined),
+      /requires applicationUid and applicationId/u
     );
   });
 

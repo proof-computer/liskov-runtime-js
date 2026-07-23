@@ -9,6 +9,7 @@ import {
 export const SLIPWAY_RUNTIME_DIAGNOSTIC_DOMAIN = "proof.slipway.runtime-diagnostic.v1";
 export const LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V2 = "proof.liskov.runtime-diagnostic.v2";
 export const LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V3 = "proof.liskov.runtime-diagnostic.v3";
+export const LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V4 = "proof.liskov.runtime-diagnostic.v4";
 export const DEFAULT_SLIPWAY_RUNTIME_HEALTH_INTERVAL_MS = 30_000;
 export const DEFAULT_SLIPWAY_RUNTIME_HEALTH_INITIAL_DELAY_MS = 30_000;
 export const DEFAULT_SLIPWAY_RUNTIME_DIAGNOSTIC_SEND_TIMEOUT_MS = 1_500;
@@ -117,6 +118,10 @@ export interface LiskovRuntimeDiagnosticV2Payload {
 
 export interface LiskovRuntimeDiagnosticV3Payload extends LiskovRuntimeDiagnosticV2Payload {
   runtimeInstanceId: string;
+}
+
+export interface LiskovRuntimeDiagnosticV4Payload extends LiskovRuntimeDiagnosticV3Payload {
+  applicationUid: string;
 }
 
 export function createSlipwayRuntimeDiagnosticEmitter(
@@ -332,6 +337,22 @@ export function liskovRuntimeDiagnosticV3Message(input: LiskovRuntimeDiagnosticV
   }), "utf8");
 }
 
+export function canonicalLiskovRuntimeDiagnosticV4Payload(
+  input: LiskovRuntimeDiagnosticV4Payload
+): LiskovRuntimeDiagnosticV4Payload {
+  return {
+    ...canonicalLiskovRuntimeDiagnosticV3Payload(input),
+    applicationUid: boundedRequiredString(input.applicationUid, 256, "applicationUid")
+  };
+}
+
+export function liskovRuntimeDiagnosticV4Message(input: LiskovRuntimeDiagnosticV4Payload): Uint8Array {
+  return Buffer.from(canonicalJson({
+    domain: LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V4,
+    ...canonicalLiskovRuntimeDiagnosticV4Payload(input)
+  }), "utf8");
+}
+
 function canSendRemoteDiagnostic(options: SlipwayRuntimeDiagnosticEmitterOptions): boolean {
   if (options.coreUrl && options.identityProvider) return true;
   if (!options.bootstrap) return false;
@@ -400,16 +421,24 @@ async function sendLiskovRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitte
   const v3Payload = runtimeInstanceId === undefined
     ? undefined
     : canonicalLiskovRuntimeDiagnosticV3Payload({ ...payload, runtimeInstanceId });
+  const applicationUid = input.bootstrap?.applicationUid;
+  const v4Payload = v3Payload === undefined || applicationUid === undefined
+    ? undefined
+    : canonicalLiskovRuntimeDiagnosticV4Payload({ ...v3Payload, applicationUid });
   const signature = await input.identityProvider.sign(
-    v3Payload === undefined
+    v4Payload !== undefined
+      ? liskovRuntimeDiagnosticV4Message(v4Payload)
+      : v3Payload === undefined
       ? liskovRuntimeDiagnosticV2Message(payload)
       : liskovRuntimeDiagnosticV3Message(v3Payload)
   );
   await postDiagnostic({ ...input, fetchImpl, url, body: {
-    domain: v3Payload === undefined
+    domain: v4Payload !== undefined
+      ? LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V4
+      : v3Payload === undefined
       ? LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V2
       : LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V3,
-    ...(v3Payload ?? payload),
+    ...(v4Payload ?? v3Payload ?? payload),
     signature
   }});
 }

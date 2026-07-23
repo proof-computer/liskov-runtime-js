@@ -37,6 +37,8 @@ export const BLACKBOX_LOG_ENV_NAMES = [
   "BLACKBOX_APPLICATION_ID",
   "BLACKBOX_DEPLOYMENT_ID"
 ] as const;
+export const BLACKBOX_RUNTIME_LOG_CONFIG_DOMAIN_V2 =
+  "proof.liskov.blackbox-log-config.v2" as const;
 
 const SPOOL_STATE_FILE = "state.json";
 const SPOOL_RECORD_FORMAT = "blackbox-spool-record-v1";
@@ -63,6 +65,8 @@ const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
  *   first-boot/`prepare()` failures are captured from the very first write.
  */
 export interface BlackboxRuntimeLogConfig {
+  /** UID-bearing configs are explicit and fail closed if either identifier is absent. */
+  domain?: typeof BLACKBOX_RUNTIME_LOG_CONFIG_DOMAIN_V2;
   sinkId?: string;
   jobId?: string;
   writeUrl?: string;
@@ -80,6 +84,7 @@ export interface BlackboxRuntimeLogConfig {
   /** Local spool directory for the always-on spool (P1.4). */
   spoolDir?: string;
   network?: string;
+  applicationUid?: string;
   applicationId?: string;
   deploymentId?: string;
   context?: string;
@@ -137,6 +142,7 @@ export function readBlackboxLogConfig(
   if (compact) {
     const parsed = parseBlackboxLogConfigPayload(compact);
     return normalizeBlackboxLogConfig({
+      domain: stringField(parsed, "domain") ?? stringField(parsed, "d"),
       sinkId: stringField(parsed, "sinkId") ?? stringField(parsed, "sid"),
       jobId: stringField(parsed, "jobId") ?? stringField(parsed, "jid") ?? stringField(parsed, "job"),
       writeUrl: stringField(parsed, "writeUrl") ?? stringField(parsed, "url"),
@@ -148,6 +154,7 @@ export function readBlackboxLogConfig(
       baseUrl: stringField(parsed, "baseUrl") ?? stringField(parsed, "base"),
       spoolDir: stringField(parsed, "spoolDir") ?? stringField(parsed, "spool"),
       network: stringField(parsed, "network") ?? stringField(parsed, "net"),
+      applicationUid: stringField(parsed, "applicationUid") ?? stringField(parsed, "uid"),
       applicationId: stringField(parsed, "applicationId") ?? stringField(parsed, "app"),
       deploymentId: stringField(parsed, "deploymentId") ?? stringField(parsed, "dep"),
       context: contextField(parsed.context ?? parsed.ctx),
@@ -660,6 +667,7 @@ class BlackboxSpoolEngine {
     const body = withoutUndefined({
       jobId,
       network: this.config.network,
+      applicationUid: this.config.applicationUid,
       applicationId: this.config.applicationId,
       deploymentId: this.config.deploymentId
     });
@@ -1214,6 +1222,7 @@ function decodeEncodedJson(value: string): string {
 }
 
 function normalizeBlackboxLogConfig(input: {
+  domain?: string;
   sinkId?: string;
   jobId?: string;
   writeUrl?: string;
@@ -1225,12 +1234,26 @@ function normalizeBlackboxLogConfig(input: {
   baseUrl?: string;
   spoolDir?: string;
   network?: string;
+  applicationUid?: string;
   applicationId?: string;
   deploymentId?: string;
   context?: string;
   timeoutMs?: number;
 }): BlackboxRuntimeLogConfig {
   if (!input.dek) throw new Error("Blackbox log config requires dek");
+  if (
+    input.domain !== undefined &&
+    input.domain !== BLACKBOX_RUNTIME_LOG_CONFIG_DOMAIN_V2
+  ) {
+    throw new Error(`Unsupported Blackbox log config domain: ${input.domain}`);
+  }
+  if (input.domain === BLACKBOX_RUNTIME_LOG_CONFIG_DOMAIN_V2) {
+    if (!input.applicationUid || !input.applicationId) {
+      throw new Error("Blackbox log config v2 requires applicationUid and applicationId");
+    }
+  } else if (input.applicationUid !== undefined) {
+    throw new Error("Blackbox applicationUid requires the v2 config domain");
+  }
   if (
     input.writerKeyDerivation !== undefined &&
     input.writerKeyDerivation !== BLACKBOX_WRITER_KEY_DERIVATION
@@ -1253,6 +1276,7 @@ function normalizeBlackboxLogConfig(input: {
       throw new Error("Blackbox baseUrl must use http or https");
     }
     return withoutUndefined({
+      domain: input.domain,
       jobId: input.jobId,
       dek: input.dek,
       writerKeyDerivation,
@@ -1261,6 +1285,7 @@ function normalizeBlackboxLogConfig(input: {
       baseUrl: input.baseUrl,
       spoolDir: input.spoolDir,
       network: input.network,
+      applicationUid: input.applicationUid,
       applicationId: input.applicationId,
       deploymentId: input.deploymentId,
       context: input.context,
@@ -1283,6 +1308,7 @@ function normalizeBlackboxLogConfig(input: {
   }
   validateHttpUrl(resumeUrl, "Blackbox resumeUrl");
   return withoutUndefined({
+    domain: input.domain,
     sinkId: input.sinkId,
     jobId: input.jobId,
     writeUrl: url.toString(),
@@ -1291,6 +1317,9 @@ function normalizeBlackboxLogConfig(input: {
     writerKeyDerivation,
     baseUrl: input.baseUrl,
     spoolDir: input.spoolDir,
+    applicationUid: input.applicationUid,
+    applicationId: input.applicationId,
+    deploymentId: input.deploymentId,
     context: input.context,
     timeoutMs: input.timeoutMs
   }) as BlackboxRuntimeLogConfig;

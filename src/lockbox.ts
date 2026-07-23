@@ -33,12 +33,24 @@ import {
   type RuntimeRandomBytes
 } from "./shared.js";
 
-export const LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN = "proof.lockbox.job-secret-request.v1";
-export const LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN = "proof.lockbox.job-secret-response.v1";
-export const LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN = "proof.lockbox.job-secret-response.encrypted-payload.v1";
+export const LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V1 = "proof.lockbox.job-secret-request.v1";
+export const LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V2 = "proof.lockbox.job-secret-request.v2";
+export const LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V1 = "proof.lockbox.job-secret-response.v1";
+export const LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V2 = "proof.lockbox.job-secret-response.v2";
+export const LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN_V1 =
+  "proof.lockbox.job-secret-response.encrypted-payload.v1";
+export const LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN_V2 =
+  "proof.lockbox.job-secret-response.encrypted-payload.v2";
+export const LOCKBOX_RUNTIME_JOB_SECRET_AAD_DOMAIN_V2 = "proof.lockbox.job-secret-response.aad.v2";
+/** Compatibility aliases retained for existing consumers. */
+export const LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN = LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V1;
+export const LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN = LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V1;
+export const LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN =
+  LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN_V1;
 
 export interface LockboxRuntimeJobSecretUnsignedRequest {
-  domain: typeof LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN;
+  domain: typeof LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V1 | typeof LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V2;
+  applicationUid?: string;
   applicationId: string;
   grantId: string;
   policyDigest: string;
@@ -57,13 +69,16 @@ export interface LockboxRuntimeJobSecretSignedRequest extends LockboxRuntimeJobS
 }
 
 export interface LockboxRuntimeJobSecretEncryptedPayload {
-  domain: typeof LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN;
-  version: "acurast-p256-hkdf-aes-256-gcm-v1";
+  domain:
+    | typeof LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN_V1
+    | typeof LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN_V2;
+  version: "acurast-p256-hkdf-aes-256-gcm-v1" | "acurast-p256-hkdf-aes-256-gcm-v2";
   curveName: "secp256r1";
   senderPublicKey: string;
   saltHex: string;
   ciphertextHex: string;
   plaintextDigest: string;
+  aadDigest?: string;
   encryptedPayloadDigest: string;
 }
 
@@ -78,9 +93,10 @@ export interface LockboxRuntimePlaintextSecret {
 }
 
 export interface LockboxRuntimeJobSecretPlaintextPayload {
-  domain: typeof LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN;
+  domain: typeof LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V1 | typeof LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V2;
   requestId: string;
   grantId: string;
+  applicationUid?: string;
   applicationId: string;
   repository: string;
   policyDigest: string;
@@ -103,8 +119,10 @@ export interface LockboxRuntimeSecretVersionMetadata {
 
 export interface LockboxRuntimeJobSecretResponse {
   ok: true;
+  domain?: typeof LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V2;
   requestId: string;
   grantId: string;
+  applicationUid?: string;
   applicationId: string;
   repository: string;
   policyDigest: string;
@@ -119,6 +137,7 @@ export interface LockboxRuntimeJobSecretResponse {
 
 export interface LockboxRuntimeSecretConfig {
   lockboxUrl: string;
+  applicationUid?: string;
   applicationId: string;
   grantId: string;
   policyDigest: string;
@@ -199,6 +218,7 @@ export function readLockboxRuntimeConfig(options: RuntimeEnvLookupOptions = {}):
     getRuntimeEnvValue("PROOF_LOCKBOX_REQUESTED_SECRET_IDS", options);
   return {
     lockboxUrl,
+    applicationUid: getRuntimeEnvValue("LISKOV_APPLICATION_UID", options),
     applicationId: requiredRuntimeEnvValue("PROOF_LOCKBOX_APPLICATION_ID", options),
     grantId: requiredRuntimeEnvValue("PROOF_LOCKBOX_GRANT_ID", options),
     policyDigest: normalizePolicyDigest(requiredRuntimeEnvValue("PROOF_LOCKBOX_POLICY_DIGEST", options)),
@@ -219,6 +239,9 @@ export function lockboxRuntimeConfigFromBootstrap(
   const secretIds = record.s ?? record.secretIds ?? record.requestedSecretIds;
   return {
     lockboxUrl: requiredStringAlias(record, "u", "url", "lockboxUrl"),
+    ...(bootstrapApplicationUid(record) === undefined
+      ? {}
+      : { applicationUid: bootstrapApplicationUid(record) }),
     applicationId: requiredStringAlias(record, "a", "applicationId"),
     grantId: requiredStringAlias(record, "g", "grantId"),
     policyDigest: normalizePolicyDigest(requiredStringAlias(record, "p", "policyDigest")),
@@ -231,6 +254,14 @@ export function lockboxRuntimeConfigFromBootstrap(
   };
 }
 
+function bootstrapApplicationUid(record: Record<string, unknown>): string | undefined {
+  if (typeof record.uid === "string" && record.uid.length > 0) return record.uid;
+  if (typeof record.applicationUid === "string" && record.applicationUid.length > 0) {
+    return record.applicationUid;
+  }
+  return undefined;
+}
+
 export async function buildLockboxRuntimeJobSecretRequest(input: {
   identityProvider: RuntimeIdentityProvider;
   config: LockboxRuntimeSecretConfig;
@@ -240,8 +271,12 @@ export async function buildLockboxRuntimeJobSecretRequest(input: {
 }): Promise<LockboxRuntimeJobSecretSignedRequest> {
   const identity = await input.identityProvider.resolveIdentity({ requireEncryptionKey: true });
   const nowMs = input.nowMs ?? Date.now();
+  const domain = input.config.applicationUid
+    ? LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V2
+    : LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V1;
   const request = canonicalLockboxRuntimeJobSecretRequest({
-    domain: LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN,
+    domain,
+    applicationUid: input.config.applicationUid,
     applicationId: input.config.applicationId,
     grantId: input.config.grantId,
     policyDigest: input.config.policyDigest,
@@ -264,8 +299,9 @@ export function canonicalLockboxRuntimeJobSecretRequest(
   request: LockboxRuntimeJobSecretUnsignedRequest | LockboxRuntimeJobSecretSignedRequest
 ): LockboxRuntimeJobSecretUnsignedRequest {
   const { signature: _signature, ...unsigned } = request as LockboxRuntimeJobSecretSignedRequest;
-  return {
-    domain: LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN,
+  const domain = lockboxRequestDomain(unsigned.domain);
+  const canonical: LockboxRuntimeJobSecretUnsignedRequest = {
+    domain,
     applicationId: requiredString(unsigned as unknown as Record<string, unknown>, "applicationId"),
     grantId: requiredString(unsigned as unknown as Record<string, unknown>, "grantId"),
     policyDigest: normalizePolicyDigest(unsigned.policyDigest),
@@ -278,6 +314,13 @@ export function canonicalLockboxRuntimeJobSecretRequest(
     expiresAtMs: integerTimestamp(unsigned.expiresAtMs, "expiresAtMs"),
     responseEncryptionKey: normalizeHexNoPrefix(unsigned.responseEncryptionKey)
   };
+  if (domain === LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V2) {
+    canonical.applicationUid = requiredString(
+      unsigned as unknown as Record<string, unknown>,
+      "applicationUid"
+    );
+  }
+  return canonical;
 }
 
 export function lockboxRuntimeJobSecretRequestMessage(request: LockboxRuntimeJobSecretUnsignedRequest): Uint8Array {
@@ -377,6 +420,12 @@ export async function decryptAndVerifyLockboxRuntimePayload(input: {
   delete (encryptedPayloadBase as { encryptedPayloadDigest?: string }).encryptedPayloadDigest;
   if (!digestMatches(canonicalJson(encryptedPayloadBase), encryptedPayload.encryptedPayloadDigest)) {
     throw new Error("Lockbox encrypted payload digest mismatch");
+  }
+  if (input.request.domain === LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V2) {
+    const aad = lockboxRuntimeResponseAad({ request: input.request, response: input.response });
+    if (encryptedPayload.aadDigest !== sha256Digest(aad)) {
+      throw new Error("Lockbox encrypted payload AAD binding mismatch");
+    }
   }
   const plaintextBytes = await input.identityProvider.decryptGrantPayload(encryptedPayload);
   const plaintextText = Buffer.from(plaintextBytes).toString("utf8");
@@ -478,10 +527,19 @@ async function postLockboxRuntimeJobSecretRequest(input: LockboxRuntimeLoadOptio
 export function parseLockboxRuntimeJobSecretResponse(value: unknown): LockboxRuntimeJobSecretResponse {
   const record = asRecord(value, "Lockbox job secret response");
   if (record.ok !== true) throw new Error("Lockbox response did not include ok=true");
+  const domain = record.domain === undefined
+    ? undefined
+    : record.domain === LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V2
+      ? LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V2
+      : (() => { throw new Error("Lockbox response has an unsupported domain"); })();
   return {
     ok: true,
+    ...(domain === undefined ? {} : { domain }),
     requestId: requiredString(record, "requestId"),
     grantId: requiredString(record, "grantId"),
+    ...(domain === LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V2
+      ? { applicationUid: requiredString(record, "applicationUid") }
+      : {}),
     applicationId: requiredString(record, "applicationId"),
     repository: requiredString(record, "repository"),
     policyDigest: normalizePolicyDigest(requiredString(record, "policyDigest")),
@@ -497,13 +555,14 @@ export function parseLockboxRuntimeJobSecretResponse(value: unknown): LockboxRun
 
 export function parseLockboxPlaintextPayload(value: unknown): LockboxRuntimeJobSecretPlaintextPayload {
   const record = asRecord(value, "Lockbox plaintext payload");
-  if (record.domain !== LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN) {
-    throw new Error("Lockbox plaintext payload has an unsupported domain");
-  }
+  const domain = lockboxResponseDomain(record.domain);
   return {
-    domain: LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN,
+    domain,
     requestId: requiredString(record, "requestId"),
     grantId: requiredString(record, "grantId"),
+    ...(domain === LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V2
+      ? { applicationUid: requiredString(record, "applicationUid") }
+      : {}),
     applicationId: requiredString(record, "applicationId"),
     repository: requiredString(record, "repository"),
     policyDigest: normalizePolicyDigest(requiredString(record, "policyDigest")),
@@ -517,21 +576,25 @@ export function parseLockboxPlaintextPayload(value: unknown): LockboxRuntimeJobS
 
 export function parseLockboxEncryptedPayload(value: unknown): LockboxRuntimeJobSecretEncryptedPayload {
   const record = asRecord(value, "Lockbox encrypted payload");
-  if (record.domain !== LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN) {
-    throw new Error("Lockbox encrypted payload has an unsupported domain");
-  }
+  const domain = lockboxEncryptedPayloadDomain(record.domain);
   const version = requiredString(record, "version");
   const curveName = requiredString(record, "curveName");
-  if (version !== "acurast-p256-hkdf-aes-256-gcm-v1") throw new Error("Lockbox encrypted payload has an unsupported version");
+  const expectedVersion = domain === LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN_V2
+    ? "acurast-p256-hkdf-aes-256-gcm-v2"
+    : "acurast-p256-hkdf-aes-256-gcm-v1";
+  if (version !== expectedVersion) throw new Error("Lockbox encrypted payload has an unsupported version");
   if (curveName !== "secp256r1") throw new Error("Lockbox encrypted payload has an unsupported curve");
   return {
-    domain: LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN,
+    domain,
     version,
     curveName,
     senderPublicKey: requiredString(record, "senderPublicKey"),
     saltHex: requiredString(record, "saltHex"),
     ciphertextHex: requiredString(record, "ciphertextHex"),
     plaintextDigest: requiredString(record, "plaintextDigest"),
+    ...(domain === LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN_V2
+      ? { aadDigest: requiredString(record, "aadDigest") }
+      : {}),
     encryptedPayloadDigest: requiredString(record, "encryptedPayloadDigest")
   };
 }
@@ -542,7 +605,16 @@ function assertLockboxResponseBinding(input: {
 }): void {
   const request = canonicalLockboxRuntimeJobSecretRequest(input.request);
   const response = input.response;
+  const expectedDomain = request.domain === LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V2
+    ? LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V2
+    : undefined;
+  if (response.domain !== expectedDomain) {
+    throw new Error("Lockbox response attempted a protocol downgrade");
+  }
   const expected: Array<[unknown, unknown, string]> = [
+    ...(request.domain === LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V2
+      ? [[response.applicationUid, request.applicationUid, "applicationUid"] as [unknown, unknown, string]]
+      : []),
     [response.grantId, request.grantId, "grantId"],
     [response.applicationId, request.applicationId, "applicationId"],
     [response.policyDigest, request.policyDigest, "policyDigest"],
@@ -563,7 +635,16 @@ function assertLockboxPayloadBinding(input: {
 }): void {
   assertLockboxResponseBinding({ request: input.request, response: input.response });
   const request = canonicalLockboxRuntimeJobSecretRequest(input.request);
+  const expectedPayloadDomain = request.domain === LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V2
+    ? LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V2
+    : LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V1;
+  if (input.payload.domain !== expectedPayloadDomain) {
+    throw new Error("Lockbox plaintext payload attempted a protocol downgrade");
+  }
   const expected: Array<[unknown, unknown, string]> = [
+    ...(request.domain === LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V2
+      ? [[input.payload.applicationUid, request.applicationUid, "applicationUid"] as [unknown, unknown, string]]
+      : []),
     [input.payload.requestId, input.response.requestId, "requestId"],
     [input.payload.grantId, request.grantId, "grantId"],
     [input.payload.applicationId, request.applicationId, "applicationId"],
@@ -688,4 +769,59 @@ export function lockboxEncryptedPayloadDigest(
   encryptedPayload: Omit<LockboxRuntimeJobSecretEncryptedPayload, "encryptedPayloadDigest">
 ): string {
   return sha256Digest(canonicalJson(encryptedPayload));
+}
+
+export function lockboxRuntimeResponseAad(input: {
+  request: LockboxRuntimeJobSecretUnsignedRequest;
+  response: Pick<LockboxRuntimeJobSecretResponse, "requestId">;
+}): string {
+  const request = canonicalLockboxRuntimeJobSecretRequest(input.request);
+  if (request.domain !== LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V2) {
+    throw new Error("Lockbox response AAD v2 requires a v2 request");
+  }
+  return canonicalJson({
+    domain: LOCKBOX_RUNTIME_JOB_SECRET_AAD_DOMAIN_V2,
+    requestId: input.response.requestId,
+    applicationUid: request.applicationUid,
+    applicationId: request.applicationId,
+    grantId: request.grantId,
+    policyDigest: request.policyDigest,
+    jobId: request.jobId,
+    deploymentId: request.deploymentId,
+    processorId: request.processorId
+  });
+}
+
+function lockboxRequestDomain(value: unknown):
+  typeof LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V1 | typeof LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V2 {
+  if (
+    value === LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V1 ||
+    value === LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V2
+  ) {
+    return value;
+  }
+  throw new Error("Lockbox request has an unsupported domain");
+}
+
+function lockboxResponseDomain(value: unknown):
+  typeof LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V1 | typeof LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V2 {
+  if (
+    value === LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V1 ||
+    value === LOCKBOX_RUNTIME_JOB_SECRET_RESPONSE_DOMAIN_V2
+  ) {
+    return value;
+  }
+  throw new Error("Lockbox plaintext payload has an unsupported domain");
+}
+
+function lockboxEncryptedPayloadDomain(value: unknown):
+  | typeof LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN_V1
+  | typeof LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN_V2 {
+  if (
+    value === LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN_V1 ||
+    value === LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN_V2
+  ) {
+    return value;
+  }
+  throw new Error("Lockbox encrypted payload has an unsupported domain");
 }

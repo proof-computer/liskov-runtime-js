@@ -26,10 +26,19 @@ import {
   type RuntimeRandomBytes
 } from "./shared.js";
 
-export const LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN = "proof.liskov.runtime-bootstrap-request.v1";
-export const LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN = "proof.liskov.secret-bootstrap-request.v1";
-export const LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN = "proof.liskov.runtime-bootstrap-response.v1";
-export const LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN = "proof.liskov.secret-bootstrap-response.v1";
+export const LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN_V1 = "proof.liskov.runtime-bootstrap-request.v1";
+export const LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN_V2 = "proof.liskov.runtime-bootstrap-request.v2";
+export const LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN_V1 = "proof.liskov.secret-bootstrap-request.v1";
+export const LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN_V2 = "proof.liskov.secret-bootstrap-request.v2";
+export const LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V1 = "proof.liskov.runtime-bootstrap-response.v1";
+export const LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2 = "proof.liskov.runtime-bootstrap-response.v2";
+export const LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V1 = "proof.liskov.secret-bootstrap-response.v1";
+export const LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V2 = "proof.liskov.secret-bootstrap-response.v2";
+/** Compatibility aliases retained for existing consumers. */
+export const LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN = LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN_V1;
+export const LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN = LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN_V1;
+export const LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN = LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V1;
+export const LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN = LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V1;
 export const DEFAULT_LISKOV_CORE_URL = "https://liskov.proof.computer";
 export const DEFAULT_LISKOV_SECRETS_URL = "https://secrets.liskov.proof.computer";
 export const DEFAULT_LISKOV_BOOTSTRAP_REQUEST_TTL_MS = 60_000;
@@ -64,7 +73,7 @@ export interface LiskovSignedBootstrapOptions extends LiskovSignedBootstrapConfi
 }
 
 export interface LiskovRuntimeBootstrapUnsignedRequest {
-  domain: typeof LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN;
+  domain: typeof LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN_V1 | typeof LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN_V2;
   jobId: string;
   processorId: string;
   nonce: string;
@@ -77,7 +86,7 @@ export interface LiskovRuntimeBootstrapSignedRequest extends LiskovRuntimeBootst
 }
 
 export interface LiskovSecretBootstrapUnsignedRequest {
-  domain: typeof LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN;
+  domain: typeof LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN_V1 | typeof LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN_V2;
   jobId: string;
   processorId: string;
   responseEncryptionKey: string;
@@ -92,7 +101,8 @@ export interface LiskovSecretBootstrapSignedRequest extends LiskovSecretBootstra
 
 export interface LiskovRuntimeBootstrapResponse {
   ok: true;
-  domain: typeof LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN;
+  domain: typeof LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V1 | typeof LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2;
+  applicationUid?: string;
   applicationId: string;
   policyDigest: string;
   deploymentId: string;
@@ -112,8 +122,9 @@ export interface LiskovRuntimeBootstrapResponse {
 
 export interface LiskovSecretBootstrapResponse {
   ok: true;
-  domain: typeof LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN;
+  domain: typeof LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V1 | typeof LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V2;
   lockboxUrl: string;
+  applicationUid?: string;
   applicationId: string;
   grantId: string;
   policyDigest: string;
@@ -206,7 +217,7 @@ export async function buildLiskovRuntimeBootstrapRequest(input: {
   const identity = await input.identityProvider.resolveIdentity({ requireEncryptionKey: false });
   const nowMs = input.nowMs ?? Date.now();
   const request = canonicalLiskovRuntimeBootstrapRequest({
-    domain: LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN,
+    domain: LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN_V2,
     jobId: identity.jobId,
     processorId: identity.processorId,
     nonce: input.nonce ?? randomHex(16, input.randomBytes),
@@ -229,7 +240,7 @@ export async function buildLiskovSecretBootstrapRequest(input: {
   const identity = await input.identityProvider.resolveIdentity({ requireEncryptionKey: true });
   const nowMs = input.nowMs ?? Date.now();
   const request = canonicalLiskovSecretBootstrapRequest({
-    domain: LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN,
+    domain: LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN_V2,
     jobId: identity.jobId,
     processorId: identity.processorId,
     responseEncryptionKey: normalizeHexNoPrefix(identity.responseEncryptionKey!),
@@ -247,8 +258,9 @@ export function canonicalLiskovRuntimeBootstrapRequest(
   request: LiskovRuntimeBootstrapUnsignedRequest | LiskovRuntimeBootstrapSignedRequest
 ): LiskovRuntimeBootstrapUnsignedRequest {
   const { signature: _signature, ...unsigned } = request as LiskovRuntimeBootstrapSignedRequest;
+  const domain = runtimeBootstrapRequestDomain(unsigned.domain);
   return {
-    domain: LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN,
+    domain,
     jobId: requiredString(unsigned as unknown as Record<string, unknown>, "jobId"),
     processorId: requiredString(unsigned as unknown as Record<string, unknown>, "processorId"),
     nonce: requiredString(unsigned as unknown as Record<string, unknown>, "nonce"),
@@ -261,8 +273,9 @@ export function canonicalLiskovSecretBootstrapRequest(
   request: LiskovSecretBootstrapUnsignedRequest | LiskovSecretBootstrapSignedRequest
 ): LiskovSecretBootstrapUnsignedRequest {
   const { signature: _signature, ...unsigned } = request as LiskovSecretBootstrapSignedRequest;
+  const domain = secretBootstrapRequestDomain(unsigned.domain);
   return {
-    domain: LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN,
+    domain,
     jobId: requiredString(unsigned as unknown as Record<string, unknown>, "jobId"),
     processorId: requiredString(unsigned as unknown as Record<string, unknown>, "processorId"),
     responseEncryptionKey: normalizeHexNoPrefix(requiredString(unsigned as unknown as Record<string, unknown>, "responseEncryptionKey")),
@@ -311,6 +324,7 @@ export async function loadLiskovRuntimeBootstrap(
     ? undefined
     : {
         slipwayUrl: response.runtimeEnv?.url ?? response.slipwayUrl,
+        ...(response.applicationUid === undefined ? {} : { applicationUid: response.applicationUid }),
         applicationId: response.applicationId,
         policyDigest: response.policyDigest,
         deploymentId: response.deploymentId,
@@ -357,6 +371,7 @@ export async function loadLiskovSecretBootstrap(
     response,
     lockboxConfig: {
       lockboxUrl: response.lockboxUrl,
+      ...(response.applicationUid === undefined ? {} : { applicationUid: response.applicationUid }),
       applicationId: response.applicationId,
       grantId: response.grantId,
       policyDigest: response.policyDigest,
@@ -375,14 +390,18 @@ export async function loadLiskovSecretBootstrap(
 
 export function parseLiskovRuntimeBootstrapResponse(value: unknown): LiskovRuntimeBootstrapResponse {
   const record = asRecord(value, "Liskov runtime bootstrap response");
-  if (record.ok !== true || record.domain !== LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN) {
+  const domain = runtimeBootstrapResponseDomain(record.domain);
+  if (record.ok !== true) {
     throw new Error("Liskov runtime bootstrap response has an unsupported domain");
   }
   const runtimeEnv = recordOrUndefined(record.runtimeEnv);
   const secrets = recordOrUndefined(record.secrets);
   return {
     ok: true,
-    domain: LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN,
+    domain,
+    ...(domain === LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2
+      ? { applicationUid: requiredString(record, "applicationUid") }
+      : {}),
     applicationId: requiredString(record, "applicationId"),
     policyDigest: normalizePolicyDigest(requiredString(record, "policyDigest")),
     deploymentId: requiredString(record, "deploymentId"),
@@ -407,13 +426,17 @@ export function parseLiskovRuntimeBootstrapResponse(value: unknown): LiskovRunti
 
 export function parseLiskovSecretBootstrapResponse(value: unknown): LiskovSecretBootstrapResponse {
   const record = asRecord(value, "Liskov secret bootstrap response");
-  if (record.ok !== true || record.domain !== LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN) {
+  const domain = secretBootstrapResponseDomain(record.domain);
+  if (record.ok !== true) {
     throw new Error("Liskov secret bootstrap response has an unsupported domain");
   }
   return {
     ok: true,
-    domain: LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN,
+    domain,
     lockboxUrl: requiredString(record, "lockboxUrl"),
+    ...(domain === LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V2
+      ? { applicationUid: requiredString(record, "applicationUid") }
+      : {}),
     applicationId: requiredString(record, "applicationId"),
     grantId: requiredString(record, "grantId"),
     policyDigest: normalizePolicyDigest(requiredString(record, "policyDigest")),
@@ -538,6 +561,12 @@ function assertRuntimeBootstrapBinding(input: {
   request: LiskovRuntimeBootstrapUnsignedRequest;
   response: LiskovRuntimeBootstrapResponse;
 }): void {
+  const expectedDomain = input.request.domain === LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN_V2
+    ? LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2
+    : LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V1;
+  if (input.response.domain !== expectedDomain) {
+    throw new Error("Liskov runtime bootstrap response attempted a protocol downgrade");
+  }
   if (input.response.jobId !== input.request.jobId) {
     throw new Error("Liskov runtime bootstrap response jobId did not match the signed request");
   }
@@ -550,6 +579,12 @@ function assertSecretBootstrapBinding(input: {
   request: LiskovSecretBootstrapUnsignedRequest;
   response: LiskovSecretBootstrapResponse;
 }): void {
+  const expectedDomain = input.request.domain === LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN_V2
+    ? LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V2
+    : LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V1;
+  if (input.response.domain !== expectedDomain) {
+    throw new Error("Liskov secret bootstrap response attempted a protocol downgrade");
+  }
   if (input.response.jobId !== input.request.jobId) {
     throw new Error("Liskov secret bootstrap response jobId did not match the signed request");
   }
@@ -564,4 +599,36 @@ function requiredStringArray(record: Record<string, unknown>, field: string): st
     throw new Error(`${field} must be a string array`);
   }
   return value;
+}
+
+function runtimeBootstrapRequestDomain(value: unknown):
+  typeof LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN_V1 | typeof LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN_V2 {
+  if (value === LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN_V1 || value === LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN_V2) {
+    return value;
+  }
+  throw new Error("Liskov runtime bootstrap request has an unsupported domain");
+}
+
+function secretBootstrapRequestDomain(value: unknown):
+  typeof LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN_V1 | typeof LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN_V2 {
+  if (value === LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN_V1 || value === LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN_V2) {
+    return value;
+  }
+  throw new Error("Liskov secret bootstrap request has an unsupported domain");
+}
+
+function runtimeBootstrapResponseDomain(value: unknown):
+  typeof LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V1 | typeof LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2 {
+  if (value === LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V1 || value === LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2) {
+    return value;
+  }
+  throw new Error("Liskov runtime bootstrap response has an unsupported domain");
+}
+
+function secretBootstrapResponseDomain(value: unknown):
+  typeof LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V1 | typeof LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V2 {
+  if (value === LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V1 || value === LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V2) {
+    return value;
+  }
+  throw new Error("Liskov secret bootstrap response has an unsupported domain");
 }

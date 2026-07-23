@@ -7,8 +7,10 @@ import {
   createSlipwayRuntimeDiagnosticEmitter,
   canonicalLiskovRuntimeDiagnosticV2Payload,
   canonicalLiskovRuntimeDiagnosticV3Payload,
+  canonicalLiskovRuntimeDiagnosticV4Payload,
   liskovRuntimeDiagnosticV2Message,
   liskovRuntimeDiagnosticV3Message,
+  liskovRuntimeDiagnosticV4Message,
   startSlipwayRuntimeHealth,
   slipwayRuntimeDiagnosticRequestMessage
 } from "../src/diagnostics.js";
@@ -359,5 +361,47 @@ describe("runtime-instance v3 diagnostics", () => {
     }
     assert.equal(first[0].body.sequence, 0);
     assert.equal(second[0].body.sequence, 0);
+  });
+});
+
+describe("UID-bound v4 diagnostics", () => {
+  it("matches the cross-language canonical byte vector", () => {
+    const payload = canonicalLiskovRuntimeDiagnosticV4Payload({
+      jobId: "job-1",
+      processorId: "processor-1",
+      runtimeInstanceId: "instance-2",
+      applicationUid: "app-0123456789abcdef0123456789abcdef",
+      stage: "runtime.health",
+      status: "info",
+      sequence: 0,
+      timestampMs: FIXED_NOW,
+      component: "runtime-health",
+      code: null,
+      message: null,
+      attrs: { ready: true }
+    });
+    assert.equal(
+      Buffer.from(liskovRuntimeDiagnosticV4Message(payload)).toString("utf8"),
+      '{"applicationUid":"app-0123456789abcdef0123456789abcdef","attrs":{"ready":true},"code":null,"component":"runtime-health","domain":"proof.liskov.runtime-diagnostic.v4","jobId":"job-1","message":null,"processorId":"processor-1","runtimeInstanceId":"instance-2","sequence":0,"stage":"runtime.health","status":"info","timestampMs":1719230000000}'
+    );
+  });
+
+  it("uses v4 only when both the runtime instance and UID are authenticated", async () => {
+    const calls: RecordedCall[] = [];
+    const signed: string[] = [];
+    const emitter = createSlipwayRuntimeDiagnosticEmitter({
+      coreUrl: "https://liskov.test",
+      bootstrap: baseBootstrap({
+        runtimeInstanceId: "instance-new",
+        applicationUid: "app-0123456789abcdef0123456789abcdef"
+      }),
+      identityProvider: recordingIdentityProvider(signed),
+      fetchImpl: recordingFetch(calls),
+      nowMs: () => FIXED_NOW
+    });
+    await emitter.report({ stage: "runtime.health", status: "info" });
+    assert.equal(calls[0].body.domain, "proof.liskov.runtime-diagnostic.v4");
+    assert.equal(calls[0].body.applicationUid, "app-0123456789abcdef0123456789abcdef");
+    assert.match(signed[0], /"applicationUid":"app-0123456789abcdef0123456789abcdef"/u);
   });
 });

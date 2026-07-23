@@ -4,18 +4,25 @@ import { describe, it } from "node:test";
 
 import {
   bootstrapSlipwayRuntime,
+  buildLiskovRuntimeBootstrapRequest,
+  buildLiskovSecretBootstrapRequest,
   createAcurastHttpPostFetch,
   DEFAULT_LISKOV_SECRETS_URL,
   decryptProofLogRecord,
   generateProofLogEncryptionKey,
   liskovSignedBootstrapUrls,
+  liskovRuntimeBootstrapRequestMessage,
+  liskovSecretBootstrapRequestMessage,
+  loadLiskovRuntimeBootstrap,
   lockboxEncryptedPayloadDigest,
+  lockboxRuntimeResponseAad,
   type BlackboxLogBatch,
   type LockboxRuntimeJobSecretPlaintextPayload,
   type RuntimeIdentityProvider
 } from "../src/index.js";
 
 type LockboxPlaintextSecret = LockboxRuntimeJobSecretPlaintextPayload["secrets"][number];
+const APPLICATION_UID = "app-0123456789abcdef0123456789abcdef";
 
 describe("top-level Slipway runtime bootstrap", () => {
   it("loads Slipway runtime env before Lockbox secrets and returns a refresh handle", async () => {
@@ -165,6 +172,40 @@ describe("top-level Slipway runtime bootstrap", () => {
     assert.equal(liskovSignedBootstrapUrls({ env: {} }).secretsUrl, "https://secrets.liskov.proof.computer");
   });
 
+  it("matches v2 bootstrap canonical bytes and fails closed on response downgrade", async () => {
+    const identityProvider = fakeIdentityProvider();
+    const runtimeRequest = await buildLiskovRuntimeBootstrapRequest({
+      identityProvider,
+      nowMs: 1_000,
+      nonce: "runtime-nonce"
+    });
+    assert.equal(
+      Buffer.from(liskovRuntimeBootstrapRequestMessage(runtimeRequest)).toString("utf8"),
+      '{"domain":"proof.liskov.runtime-bootstrap-request.v2","expiresAtMs":61000,"issuedAtMs":1000,"jobId":"job-1","nonce":"runtime-nonce","processorId":"processor-1"}'
+    );
+    const secretRequest = await buildLiskovSecretBootstrapRequest({
+      identityProvider,
+      nowMs: 1_000,
+      nonce: "secret-nonce"
+    });
+    assert.equal(
+      Buffer.from(liskovSecretBootstrapRequestMessage(secretRequest)).toString("utf8"),
+      `{"domain":"proof.liskov.secret-bootstrap-request.v2","expiresAtMs":61000,"issuedAtMs":1000,"jobId":"job-1","nonce":"secret-nonce","processorId":"processor-1","responseEncryptionKey":"${"ab".repeat(33)}"}`
+    );
+
+    await assert.rejects(() => loadLiskovRuntimeBootstrap({
+      identityProvider,
+      coreUrl: "https://liskov.test",
+      nowMs: () => 1_000,
+      randomBytes: (size) => new Uint8Array(size).fill(7),
+      fetchImpl: (async () => jsonResponse({
+        ...liskovRuntimeBootstrapResponse(),
+        domain: "proof.liskov.runtime-bootstrap-response.v1",
+        applicationUid: undefined
+      })) as typeof fetch
+    }), /protocol downgrade/u);
+  });
+
   it("discovers runtime env and secrets with signed Liskov bootstrap when env bootstrap is absent", async () => {
     const env: Record<string, string | undefined> = {};
     const order: string[] = [];
@@ -190,7 +231,7 @@ describe("top-level Slipway runtime bootstrap", () => {
         }
         order.push(parsed.pathname);
         if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
-          assert.equal(request.domain, "proof.liskov.runtime-bootstrap-request.v1");
+          assert.equal(request.domain, "proof.liskov.runtime-bootstrap-request.v2");
           assert.equal(request.applicationId, undefined);
           assert.equal(request.policyDigest, undefined);
           return jsonResponse(liskovRuntimeBootstrapResponse());
@@ -198,10 +239,11 @@ describe("top-level Slipway runtime bootstrap", () => {
         if (parsed.pathname === "/api/jobs/runtime-env") {
           assert.equal(request.applicationId, "generic-worker");
           assert.equal(request.policyDigest, "1".repeat(64));
-          return jsonResponse(runtimeEnvResponse());
+          assert.equal(request.applicationUid, APPLICATION_UID);
+          return jsonResponse(runtimeEnvResponse(APPLICATION_UID));
         }
         if (parsed.pathname === "/api/jobs/secret-bootstrap") {
-          assert.equal(request.domain, "proof.liskov.secret-bootstrap-request.v1");
+          assert.equal(request.domain, "proof.liskov.secret-bootstrap-request.v2");
           assert.equal(request.grantId, undefined);
           assert.equal(request.responseEncryptionKey, "ab".repeat(33));
           return jsonResponse(liskovSecretBootstrapResponse());
@@ -229,11 +271,12 @@ describe("top-level Slipway runtime bootstrap", () => {
       const runtimeBootstrapMessage = JSON.parse(signedMessages[0]!) as Record<string, unknown>;
       const secretBootstrapMessage = JSON.parse(signedMessages[1]!) as Record<string, unknown>;
       const runtimeDiagnosticMessage = JSON.parse(signedMessages[2]!) as Record<string, unknown>;
-      assert.equal(runtimeBootstrapMessage.domain, "proof.liskov.runtime-bootstrap-request.v1");
+      assert.equal(runtimeBootstrapMessage.domain, "proof.liskov.runtime-bootstrap-request.v2");
       assert.equal(runtimeBootstrapMessage.applicationId, undefined);
-      assert.equal(secretBootstrapMessage.domain, "proof.liskov.secret-bootstrap-request.v1");
+      assert.equal(secretBootstrapMessage.domain, "proof.liskov.secret-bootstrap-request.v2");
       assert.equal(secretBootstrapMessage.responseEncryptionKey, "ab".repeat(33));
-      assert.equal(runtimeDiagnosticMessage.domain, "proof.liskov.runtime-diagnostic.v3");
+      assert.equal(runtimeDiagnosticMessage.domain, "proof.liskov.runtime-diagnostic.v4");
+      assert.equal(runtimeDiagnosticMessage.applicationUid, APPLICATION_UID);
       assert.equal(runtimeDiagnosticMessage.runtimeInstanceId, "07".repeat(16));
       assert.equal(runtimeDiagnosticMessage.stage, "runtime.start");
       const startDiagnostic = diagnosticBodies.find((body) => body.stage === "runtime.start");
@@ -304,7 +347,7 @@ describe("top-level Slipway runtime bootstrap", () => {
         if (parsed.pathname === "/api/jobs/secret-bootstrap") {
           return jsonResponse(liskovSecretBootstrapResponse(["blackbox-log-config"]));
         }
-        if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse());
+        if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse(APPLICATION_UID));
         if (parsed.pathname === "/api/jobs/runtime-diagnostics") return jsonResponse({ ok: true });
         if (parsed.pathname === "/api/jobs/secret-requests") {
           const request = JSON.parse(String(init?.body)) as { requestedSecretIds: string[] };
@@ -365,7 +408,10 @@ describe("top-level Slipway runtime bootstrap", () => {
         },
         secp256r1: {
           encrypt: () => "0x00",
-          decrypt: () => "0x" + Buffer.from(JSON.stringify(plaintextPayload()), "utf8").toString("hex")
+          decrypt: () => "0x" + Buffer.from(
+            JSON.stringify(uidPlaintextPayload(plaintextPayload())),
+            "utf8"
+          ).toString("hex")
         }
       }
     };
@@ -397,7 +443,7 @@ describe("top-level Slipway runtime bootstrap", () => {
           assert.equal(request.responseEncryptionKey, "ab".repeat(33));
           return jsonResponse(liskovSecretBootstrapResponse());
         }
-        if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse());
+        if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse(APPLICATION_UID));
         if (parsed.pathname === "/api/jobs/secret-requests") {
           return jsonResponse(lockboxResponse(request as { requestedSecretIds: string[] }));
         }
@@ -453,7 +499,7 @@ describe("top-level Slipway runtime bootstrap", () => {
           }
           return jsonResponse(liskovRuntimeBootstrapResponse());
         }
-        if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse());
+        if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse(APPLICATION_UID));
         if (parsed.pathname === "/api/jobs/secret-bootstrap") return jsonResponse(liskovSecretBootstrapResponse());
         const request = JSON.parse(String(init?.body)) as { requestedSecretIds: string[] };
         return jsonResponse(lockboxResponse(request));
@@ -505,7 +551,7 @@ describe("top-level Slipway runtime bootstrap", () => {
             { status: 404, headers: { "content-type": "application/json" } }
           );
         }
-        if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse());
+        if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse(APPLICATION_UID));
         throw new Error(`unexpected path ${parsed.pathname}`);
       }) as typeof fetch
     });
@@ -558,7 +604,7 @@ describe("top-level Slipway runtime bootstrap", () => {
             { status: 404, headers: { "content-type": "application/json" } }
           );
         }
-        if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse());
+        if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse(APPLICATION_UID));
         throw new Error(`unexpected path ${parsed.pathname}`);
       }) as typeof fetch
     });
@@ -599,7 +645,7 @@ describe("top-level Slipway runtime bootstrap", () => {
               { status: 404, headers: { "content-type": "application/json" } }
             );
           }
-          if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse());
+          if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse(APPLICATION_UID));
           throw new Error(`unexpected path ${parsed.pathname}`);
         }) as typeof fetch
       }),
@@ -638,7 +684,7 @@ describe("top-level Slipway runtime bootstrap", () => {
               { status: 404, headers: { "content-type": "application/json" } }
             );
           }
-          if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse());
+          if (parsed.pathname === "/api/jobs/runtime-env") return jsonResponse(runtimeEnvResponse(APPLICATION_UID));
           throw new Error(`unexpected path ${parsed.pathname}`);
         }) as typeof fetch
       }),
@@ -671,14 +717,16 @@ describe("top-level Slipway runtime bootstrap", () => {
           return;
         }
         if (parsed.pathname === "/api/jobs/runtime-env") {
-          onSuccess(JSON.stringify(runtimeEnvResponse()), "cert");
+          onSuccess(JSON.stringify(runtimeEnvResponse(APPLICATION_UID)), "cert");
           return;
         }
         if (parsed.pathname === "/api/jobs/secret-bootstrap") {
           onSuccess(JSON.stringify(liskovSecretBootstrapResponse()), "cert");
           return;
         }
-        onSuccess(JSON.stringify(lockboxResponse({ requestedSecretIds: ["api-token"] })), "cert");
+        onSuccess(JSON.stringify(lockboxResponse(
+          JSON.parse(_body) as Parameters<typeof lockboxResponse>[0]
+        )), "cert");
       }
     });
     const handle = await bootstrapSlipwayRuntime({
@@ -702,7 +750,7 @@ describe("top-level Slipway runtime bootstrap", () => {
       assert.equal(runtimeBootstrapBodies.length, 2);
       assert.equal(runtimeBootstrapBodies[0], runtimeBootstrapBodies[1]);
       assert.equal(
-        signedMessages.filter((message) => JSON.parse(message).domain === "proof.liskov.runtime-bootstrap-request.v1").length,
+        signedMessages.filter((message) => JSON.parse(message).domain === "proof.liskov.runtime-bootstrap-request.v2").length,
         1
       );
       assert.equal(sleeps[0], 5);
@@ -1605,8 +1653,13 @@ function fakeIdentityProvider(
       options.signedMessages?.push(Buffer.from(message).toString("utf8"));
       return "0x" + "11".repeat(64);
     },
-    async decryptGrantPayload() {
-      return Buffer.from(JSON.stringify(payload), "utf8");
+    async decryptGrantPayload(encryptedPayload) {
+      const encryptedDomain = (encryptedPayload as { domain?: string }).domain;
+      return Buffer.from(JSON.stringify(
+        encryptedDomain === "proof.lockbox.job-secret-response.encrypted-payload.v2"
+          ? uidPlaintextPayload(payload)
+          : payload
+      ), "utf8");
     }
   };
 }
@@ -1643,11 +1696,14 @@ function blackboxWriteResponse(init: RequestInit | undefined): Response {
   });
 }
 
-function runtimeEnvResponse(): Record<string, unknown> {
+function runtimeEnvResponse(applicationUid?: string): Record<string, unknown> {
   return {
     ok: true,
-    domain: "proof.slipway.runtime-env-response.v1",
+    domain: applicationUid === undefined
+      ? "proof.slipway.runtime-env-response.v1"
+      : "proof.liskov.runtime-env-response.v2",
     requestId: "runtime-env-request-1",
+    ...(applicationUid === undefined ? {} : { applicationUid }),
     applicationId: "generic-worker",
     policyDigest: "1".repeat(64),
     jobId: "job-1",
@@ -1666,7 +1722,8 @@ function runtimeEnvResponse(): Record<string, unknown> {
 function liskovRuntimeBootstrapResponse(): Record<string, unknown> {
   return {
     ok: true,
-    domain: "proof.liskov.runtime-bootstrap-response.v1",
+    domain: "proof.liskov.runtime-bootstrap-response.v2",
+    applicationUid: APPLICATION_UID,
     applicationId: "generic-worker",
     policyDigest: "1".repeat(64),
     deploymentId: "42",
@@ -1690,8 +1747,9 @@ function liskovSecretBootstrapResponse(
 ): Record<string, unknown> {
   return {
     ok: true,
-    domain: "proof.liskov.secret-bootstrap-response.v1",
+    domain: "proof.liskov.secret-bootstrap-response.v2",
     lockboxUrl: "https://lockbox.test",
+    applicationUid: APPLICATION_UID,
     applicationId: "generic-worker",
     grantId: "grant-1",
     policyDigest: "1".repeat(64),
@@ -1727,33 +1785,73 @@ function plaintextPayload(secrets: LockboxPlaintextSecret[] = [{
   };
 }
 
+function uidPlaintextPayload(
+  payload: LockboxRuntimeJobSecretPlaintextPayload
+): LockboxRuntimeJobSecretPlaintextPayload {
+  return {
+    ...payload,
+    domain: "proof.lockbox.job-secret-response.v2",
+    applicationUid: APPLICATION_UID
+  };
+}
+
 function lockboxResponse(
-  request: { requestedSecretIds: string[] },
+  request: {
+    domain?: string;
+    applicationUid?: string;
+    applicationId?: string;
+    grantId?: string;
+    policyDigest?: string;
+    jobId?: string;
+    deploymentId?: string;
+    processorId?: string;
+    requestedSecretIds: string[];
+  },
   plaintext: LockboxRuntimeJobSecretPlaintextPayload = plaintextPayload()
 ) {
-  const plaintextText = JSON.stringify(plaintext);
+  const isV2 = request.domain === "proof.lockbox.job-secret-request.v2";
+  const effectivePlaintext = isV2 ? uidPlaintextPayload(plaintext) : plaintext;
+  const plaintextText = JSON.stringify(effectivePlaintext);
   const encryptedBase = {
-    domain: "proof.lockbox.job-secret-response.encrypted-payload.v1" as const,
-    version: "acurast-p256-hkdf-aes-256-gcm-v1" as const,
+    domain: isV2
+      ? "proof.lockbox.job-secret-response.encrypted-payload.v2" as const
+      : "proof.lockbox.job-secret-response.encrypted-payload.v1" as const,
+    version: isV2
+      ? "acurast-p256-hkdf-aes-256-gcm-v2" as const
+      : "acurast-p256-hkdf-aes-256-gcm-v1" as const,
     curveName: "secp256r1" as const,
     senderPublicKey: "0x" + "cd".repeat(33),
     saltHex: "0x" + "00".repeat(16),
     ciphertextHex: "0x" + "ef".repeat(16),
-    plaintextDigest: `sha256:${createHash("sha256").update(plaintextText).digest("hex")}`
+    plaintextDigest: `sha256:${createHash("sha256").update(plaintextText).digest("hex")}`,
+    ...(isV2
+      ? {
+          aadDigest: `sha256:${createHash("sha256").update(lockboxRuntimeResponseAad({
+            request: request as Parameters<typeof lockboxRuntimeResponseAad>[0]["request"],
+            response: { requestId: effectivePlaintext.requestId }
+          })).digest("hex")}`
+        }
+      : {})
   };
   return {
     ok: true,
-    requestId: plaintext.requestId,
-    grantId: plaintext.grantId,
-    applicationId: plaintext.applicationId,
-    repository: plaintext.repository,
-    policyDigest: plaintext.policyDigest,
-    jobId: plaintext.jobId,
-    deploymentId: plaintext.deploymentId,
-    processorId: plaintext.processorId,
+    ...(isV2
+      ? {
+          domain: "proof.lockbox.job-secret-response.v2",
+          applicationUid: APPLICATION_UID
+        }
+      : {}),
+    requestId: effectivePlaintext.requestId,
+    grantId: effectivePlaintext.grantId,
+    applicationId: effectivePlaintext.applicationId,
+    repository: effectivePlaintext.repository,
+    policyDigest: effectivePlaintext.policyDigest,
+    jobId: effectivePlaintext.jobId,
+    deploymentId: effectivePlaintext.deploymentId,
+    processorId: effectivePlaintext.processorId,
     requestedSecretIds: request.requestedSecretIds,
     responseKeyDigest: `sha256:${"1".repeat(64)}`,
-    secretVersions: plaintext.secrets.map((secret) => ({
+    secretVersions: effectivePlaintext.secrets.map((secret) => ({
       secretId: secret.secretId,
       versionId: secret.versionId,
       target: secret.target,

@@ -23,7 +23,7 @@ The first supported dependency source is the public GitHub release tag:
 ```json
 {
   "dependencies": {
-    "@proof-computer/liskov-runtime": "github:proof-computer/liskov-runtime-js#v0.3.6"
+    "@proof-computer/liskov-runtime": "github:proof-computer/liskov-runtime-js#v0.3.24"
   }
 }
 ```
@@ -56,6 +56,15 @@ nonce per process and reuses it across HTTP retries. New backends return that
 nonce as `runtimeInstanceId`, which the SDK binds into signed
 `proof.liskov.runtime-diagnostic.v3` events; older responses remain supported
 through the v2 diagnostic fallback.
+
+Runtime v0.3.24 makes the canonical Application UID authoritative for new
+first-party runtime sessions while preserving the legacy Application ID in
+every compatibility surface. Runtime bootstrap v2 carries both identifiers;
+signed Runtime Environment v2, Lockbox request/response/encrypted-payload v2,
+Blackbox config v2, and runtime diagnostics v4 bind them where applicable. A
+UID-bearing request fails closed on a missing UID, binding mismatch, or
+protocol downgrade; v1-v3 contracts remain available for previously published
+jobs.
 
 ## Minimal Entrypoint
 
@@ -525,8 +534,9 @@ flow alignment, not more selected Acurast example ports.
   encryption key.
 - HTTPS is required for Liskov, Lockbox, and Blackbox URLs outside local/test
   hosts unless an explicit insecure override is supplied.
-- Signed runtime-env and Lockbox requests bind application id, policy digest,
-  deployment id, job id, processor id, nonce, and expiry.
+- Signed runtime-env and Lockbox v2 requests bind Application UID,
+  compatibility application id, policy digest, deployment id, job id,
+  processor id, nonce, and expiry.
 - Lockbox encrypted payloads must bind payload digest, request/response fields,
   and requested secret ids before installation.
 - File-target secrets are written only under the configured base directory.

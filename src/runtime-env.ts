@@ -24,11 +24,17 @@ import {
   type RuntimeRandomBytes
 } from "./shared.js";
 
-export const SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN = "proof.slipway.runtime-env-request.v1";
-export const SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN = "proof.slipway.runtime-env-response.v1";
+export const SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V1 = "proof.slipway.runtime-env-request.v1";
+export const SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V2 = "proof.liskov.runtime-env-request.v2";
+export const SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN_V1 = "proof.slipway.runtime-env-response.v1";
+export const SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN_V2 = "proof.liskov.runtime-env-response.v2";
+/** Compatibility aliases retained for existing consumers. */
+export const SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN = SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V1;
+export const SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN = SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN_V1;
 
 export interface SlipwayRuntimeEnvConfig {
   slipwayUrl: string;
+  applicationUid?: string;
   applicationId: string;
   policyDigest: string;
   deploymentId: string;
@@ -47,7 +53,8 @@ export interface SlipwayRuntimeHealthConfig {
 }
 
 export interface SlipwayRuntimeEnvUnsignedRequest {
-  domain: typeof SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN;
+  domain: typeof SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V1 | typeof SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V2;
+  applicationUid?: string;
   applicationId: string;
   policyDigest: string;
   jobId: string;
@@ -64,8 +71,9 @@ export interface SlipwayRuntimeEnvSignedRequest extends SlipwayRuntimeEnvUnsigne
 
 export interface SlipwayRuntimeEnvResponse {
   ok: true;
-  domain: typeof SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN;
+  domain: typeof SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN_V1 | typeof SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN_V2;
   requestId: string;
+  applicationUid?: string;
   applicationId: string;
   policyDigest: string;
   jobId: string;
@@ -129,6 +137,9 @@ export function slipwayRuntimeEnvConfigFromBootstrap(
   const record = asRecord(JSON.parse(rawBootstrap) as unknown, "PROOF_SLIPWAY_BOOTSTRAP");
   return {
     slipwayUrl: requiredStringAlias(record, "u", "url", "slipwayUrl"),
+    ...(bootstrapApplicationUid(record) === undefined
+      ? {}
+      : { applicationUid: bootstrapApplicationUid(record) }),
     applicationId: requiredStringAlias(record, "a", "applicationId"),
     policyDigest: normalizePolicyDigest(requiredStringAlias(record, "p", "policyDigest")),
     deploymentId: requiredStringAlias(record, "d", "deploymentId"),
@@ -140,6 +151,14 @@ export function slipwayRuntimeEnvConfigFromBootstrap(
   };
 }
 
+function bootstrapApplicationUid(record: Record<string, unknown>): string | undefined {
+  if (typeof record.uid === "string" && record.uid.length > 0) return record.uid;
+  if (typeof record.applicationUid === "string" && record.applicationUid.length > 0) {
+    return record.applicationUid;
+  }
+  return undefined;
+}
+
 export async function buildSlipwayRuntimeEnvRequest(input: {
   identityProvider: RuntimeIdentityProvider;
   config: SlipwayRuntimeEnvConfig;
@@ -149,8 +168,12 @@ export async function buildSlipwayRuntimeEnvRequest(input: {
 }): Promise<SlipwayRuntimeEnvSignedRequest> {
   const identity = await input.identityProvider.resolveIdentity({ requireEncryptionKey: false });
   const nowMs = input.nowMs ?? Date.now();
+  const domain = input.config.applicationUid
+    ? SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V2
+    : SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V1;
   const request = canonicalSlipwayRuntimeEnvRequest({
-    domain: SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN,
+    domain,
+    applicationUid: input.config.applicationUid,
     applicationId: input.config.applicationId,
     policyDigest: input.config.policyDigest,
     jobId: identity.jobId,
@@ -170,8 +193,9 @@ export function canonicalSlipwayRuntimeEnvRequest(
   request: SlipwayRuntimeEnvUnsignedRequest | SlipwayRuntimeEnvSignedRequest
 ): SlipwayRuntimeEnvUnsignedRequest {
   const { signature: _signature, ...unsigned } = request as SlipwayRuntimeEnvSignedRequest;
-  return {
-    domain: SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN,
+  const domain = runtimeEnvRequestDomain(unsigned.domain);
+  const canonical: SlipwayRuntimeEnvUnsignedRequest = {
+    domain,
     applicationId: requiredString(unsigned as unknown as Record<string, unknown>, "applicationId"),
     policyDigest: normalizePolicyDigest(unsigned.policyDigest),
     jobId: requiredString(unsigned as unknown as Record<string, unknown>, "jobId"),
@@ -181,6 +205,13 @@ export function canonicalSlipwayRuntimeEnvRequest(
     issuedAtMs: integerTimestamp(unsigned.issuedAtMs, "issuedAtMs"),
     expiresAtMs: integerTimestamp(unsigned.expiresAtMs, "expiresAtMs")
   };
+  if (domain === SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V2) {
+    canonical.applicationUid = requiredString(
+      unsigned as unknown as Record<string, unknown>,
+      "applicationUid"
+    );
+  }
+  return canonical;
 }
 
 export function slipwayRuntimeEnvRequestMessage(request: SlipwayRuntimeEnvUnsignedRequest): Uint8Array {
@@ -236,7 +267,12 @@ export function installSlipwayRuntimeEnv(input: {
   response: SlipwayRuntimeEnvResponse;
   env?: Record<string, string | undefined>;
 }): string[] {
-  if (input.response.domain !== SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN || input.response.ok !== true) {
+  if (
+    ![SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN_V1, SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN_V2].includes(
+      input.response.domain
+    ) ||
+    input.response.ok !== true
+  ) {
     throw new Error("Slipway runtime env response did not include ok=true");
   }
   const env = input.env ?? process.env;
@@ -335,13 +371,17 @@ async function postSlipwayRuntimeEnvRequest(input: SlipwayRuntimeEnvLoadOptions 
 
 export function parseSlipwayRuntimeEnvResponse(value: unknown): SlipwayRuntimeEnvResponse {
   const record = asRecord(value, "Slipway runtime env response");
-  if (record.ok !== true || record.domain !== SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN) {
+  const domain = runtimeEnvResponseDomain(record.domain);
+  if (record.ok !== true) {
     throw new Error("Slipway runtime env response has an unsupported domain");
   }
   return {
     ok: true,
-    domain: SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN,
+    domain,
     requestId: requiredString(record, "requestId"),
+    ...(domain === SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN_V2
+      ? { applicationUid: requiredString(record, "applicationUid") }
+      : {}),
     applicationId: requiredString(record, "applicationId"),
     policyDigest: normalizePolicyDigest(requiredString(record, "policyDigest")),
     jobId: requiredString(record, "jobId"),
@@ -359,7 +399,16 @@ function assertSlipwayRuntimeEnvBinding(input: {
   request: SlipwayRuntimeEnvUnsignedRequest;
   response: SlipwayRuntimeEnvResponse;
 }): void {
+  const expectedDomain = input.request.domain === SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V2
+    ? SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN_V2
+    : SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN_V1;
+  if (input.response.domain !== expectedDomain) {
+    throw new Error("Slipway runtime env response attempted a protocol downgrade");
+  }
   const expected: Array<[unknown, unknown, string]> = [
+    ...(input.request.domain === SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V2
+      ? [[input.response.applicationUid, input.request.applicationUid, "applicationUid"] as [unknown, unknown, string]]
+      : []),
     [input.response.applicationId, input.request.applicationId, "applicationId"],
     [input.response.policyDigest, input.request.policyDigest, "policyDigest"],
     [input.response.jobId, input.request.jobId, "jobId"],
@@ -369,6 +418,22 @@ function assertSlipwayRuntimeEnvBinding(input: {
   for (const [actual, wanted, label] of expected) {
     if (actual !== wanted) throw new Error(`Slipway runtime env response ${label} did not match the signed request`);
   }
+}
+
+function runtimeEnvRequestDomain(value: unknown):
+  typeof SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V1 | typeof SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V2 {
+  if (value === SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V1 || value === SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V2) {
+    return value;
+  }
+  throw new Error("Slipway runtime env request has an unsupported domain");
+}
+
+function runtimeEnvResponseDomain(value: unknown):
+  typeof SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN_V1 | typeof SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN_V2 {
+  if (value === SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN_V1 || value === SLIPWAY_RUNTIME_ENV_RESPONSE_DOMAIN_V2) {
+    return value;
+  }
+  throw new Error("Slipway runtime env response has an unsupported domain");
 }
 
 function diagnosticsTokenFromBootstrap(record: Record<string, unknown>): string | undefined {

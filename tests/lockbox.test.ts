@@ -4,12 +4,14 @@ import { describe, it } from "node:test";
 
 import {
   LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN,
+  LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V2,
   buildLockboxRuntimeJobSecretRequest,
   installLockboxRuntimeSecrets,
   loadLockboxRuntimeSecrets,
   lockboxEncryptedPayloadDigest,
   lockboxRuntimeConfigFromBootstrap,
   lockboxRuntimeJobSecretRequestMessage,
+  lockboxRuntimeResponseAad,
   parseLockboxPlaintextPayload,
   readLockboxRuntimeConfig,
   type LockboxRuntimeJobSecretPlaintextPayload,
@@ -65,6 +67,39 @@ describe("Lockbox runtime secrets", () => {
     assert.deepEqual(request.requestedSecretIds, ["api-token", "file-config"]);
     assert.equal(request.responseEncryptionKey, "ab".repeat(33));
     assert.equal(signedMessages[0], Buffer.from(lockboxRuntimeJobSecretRequestMessage(request)).toString("utf8"));
+  });
+
+  it("binds both application identifiers in v2 canonical bytes and rejects downgrade", async () => {
+    const applicationUid = "app-0123456789abcdef0123456789abcdef";
+    const config = lockboxConfig({
+      applicationUid,
+      requestedSecretIds: ["file-config", "api-token"],
+      nonce: "nonce-1"
+    });
+    const request = await buildLockboxRuntimeJobSecretRequest({
+      identityProvider: fakeIdentityProvider(),
+      config,
+      nowMs: 1_000
+    });
+    assert.equal(request.domain, LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V2);
+    assert.equal(
+      Buffer.from(lockboxRuntimeJobSecretRequestMessage(request)).toString("utf8"),
+      `{"applicationId":"generic-worker","applicationUid":"${applicationUid}","deploymentId":"42","domain":"proof.lockbox.job-secret-request.v2","expiresAtMs":61000,"grantId":"grant-1","issuedAtMs":1000,"jobId":"job-1","nonce":"nonce-1","policyDigest":"${"1".repeat(64)}","processorId":"processor-1","requestedSecretIds":["api-token","file-config"],"responseEncryptionKey":"${"ab".repeat(33)}"}`
+    );
+    assert.equal(
+      lockboxRuntimeResponseAad({ request, response: { requestId: "lockbox-request-1" } }),
+      `{"applicationId":"generic-worker","applicationUid":"${applicationUid}","deploymentId":"42","domain":"proof.lockbox.job-secret-response.aad.v2","grantId":"grant-1","jobId":"job-1","policyDigest":"${"1".repeat(64)}","processorId":"processor-1","requestId":"lockbox-request-1"}`
+    );
+
+    await assert.rejects(() => loadLockboxRuntimeSecrets({
+      identityProvider: fakeIdentityProvider(),
+      config,
+      nowMs: () => 1_000,
+      fetchImpl: (async () => jsonResponse(lockboxResponse(
+        { ...request, domain: LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN },
+        plaintextPayload([{ secretId: "api-token", name: "API_TOKEN", value: "secret" }])
+      ))) as typeof fetch
+    }), /protocol downgrade/u);
   });
 
   it("fetches, decrypts, verifies binding, installs env secrets, and keeps diagnostics redacted", async () => {

@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN,
+  SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V2,
   loadSlipwayRuntimeEnv,
   slipwayRuntimeEnvRequestMessage,
   startSlipwayRuntimeEnvRefresh,
@@ -76,6 +77,47 @@ describe("Slipway runtime env", () => {
       }) as typeof fetch
     }), /HTTPS/u);
     assert.equal(fetched, false);
+  });
+
+  it("binds the UID in the v2 signature and rejects a v1 downgrade", async () => {
+    const applicationUid = "app-0123456789abcdef0123456789abcdef";
+    const signedMessages: string[] = [];
+    const config = {
+      slipwayUrl: "https://slipway.test",
+      applicationUid,
+      applicationId: "generic-worker",
+      policyDigest: "A".repeat(64),
+      deploymentId: "42",
+      nonce: "runtime-nonce"
+    };
+    const result = await loadSlipwayRuntimeEnv({
+      identityProvider: fakeIdentityProvider({ signedMessages }),
+      config,
+      nowMs: () => 1_000,
+      fetchImpl: (async (_url, init) => {
+        const request = JSON.parse(String(init?.body)) as SlipwayRuntimeEnvSignedRequest;
+        assert.equal(request.domain, SLIPWAY_RUNTIME_ENV_REQUEST_DOMAIN_V2);
+        assert.equal(request.applicationUid, applicationUid);
+        return jsonResponse({
+          ...runtimeEnvResponse(),
+          domain: "proof.liskov.runtime-env-response.v2",
+          applicationUid,
+          policyDigest: "a".repeat(64)
+        });
+      }) as typeof fetch
+    });
+    assert.equal(result.response.applicationUid, applicationUid);
+    assert.equal(
+      signedMessages[0],
+      `{"applicationId":"generic-worker","applicationUid":"${applicationUid}","deploymentId":"42","domain":"proof.liskov.runtime-env-request.v2","expiresAtMs":61000,"issuedAtMs":1000,"jobId":"job-1","nonce":"runtime-nonce","policyDigest":"${"a".repeat(64)}","processorId":"processor-1"}`
+    );
+
+    await assert.rejects(() => loadSlipwayRuntimeEnv({
+      identityProvider: fakeIdentityProvider(),
+      config,
+      nowMs: () => 1_000,
+      fetchImpl: (async () => jsonResponse(runtimeEnvResponse())) as typeof fetch
+    }), /protocol downgrade/u);
   });
 
   it("dedupes concurrent manual refreshes", async () => {
