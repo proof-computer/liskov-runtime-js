@@ -23,7 +23,7 @@ The first supported dependency source is the public GitHub release tag:
 ```json
 {
   "dependencies": {
-    "@proof-computer/liskov-runtime": "github:proof-computer/liskov-runtime-js#v0.3.24"
+    "@proof-computer/liskov-runtime": "github:proof-computer/liskov-runtime-js#v0.3.25"
   }
 }
 ```
@@ -65,6 +65,12 @@ Blackbox config v2, and runtime diagnostics v4 bind them where applicable. A
 UID-bearing request fails closed on a missing UID, binding mismatch, or
 protocol downgrade; v1-v3 contracts remain available for previously published
 jobs.
+
+Runtime v0.3.25 makes a successful signed bootstrap authoritative over legacy
+bootstrap configuration delivered in the initial environment. This preserves
+the UID from the v2 response for Runtime Environment v2, Lockbox v2, and
+runtime diagnostics v4 instead of silently continuing on the legacy
+identifier-only configuration.
 
 ## Minimal Entrypoint
 

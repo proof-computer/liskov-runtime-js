@@ -229,7 +229,7 @@ async function resolveSignedRuntimeBootstrap(input: {
   if (runtimeBootstrap.runtimeEnvConfig !== undefined) {
     input.setSlipwayConfig(runtimeBootstrap.runtimeEnvConfig);
   }
-  if (input.hasLockboxConfig) return;
+  if (input.hasLockboxConfig && input.mode !== "signed") return;
   if (input.requestedSecretsMode === "off") return;
   const shouldDiscoverSecrets =
     runtimeBootstrap.secretsRequired ||
@@ -356,10 +356,10 @@ export async function bootstrapSlipwayRuntime(
       requestedSecretsMode: options.secrets?.mode,
       hasLockboxConfig: lockboxConfig !== undefined,
       setSlipwayConfig: (config) => {
-        slipwayConfig ??= config;
+        slipwayConfig = config;
       },
       setLockboxConfig: (config) => {
-        lockboxConfig ??= config;
+        lockboxConfig = config;
       },
       setFailureStage: (stage) => {
         failureStage = stage;

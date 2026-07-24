@@ -290,6 +290,91 @@ describe("top-level Slipway runtime bootstrap", () => {
     }
   });
 
+  it("replaces legacy handoff configs with UID-bound signed bootstrap authority", async () => {
+    const env: Record<string, string | undefined> = {
+      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+        v: 1,
+        u: "https://legacy-slipway.test",
+        a: "generic-worker",
+        p: "1".repeat(64),
+        d: "42"
+      }),
+      PROOF_LOCKBOX_BOOTSTRAP: JSON.stringify({
+        v: 1,
+        u: "https://legacy-lockbox.test",
+        a: "generic-worker",
+        g: "grant-1",
+        p: "1".repeat(64),
+        d: "42",
+        s: ["api-token"]
+      })
+    };
+    const paths: string[] = [];
+    const signedMessages: string[] = [];
+    const diagnosticBodies: Record<string, unknown>[] = [];
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      bootstrap: {
+        mode: "signed",
+        coreUrl: "https://liskov.test",
+        secretsUrl: "https://secrets.liskov.test"
+      },
+      secrets: { mode: "required" },
+      identityProvider: fakeIdentityProvider(plaintextPayload(), { signedMessages }),
+      nowMs: () => 1_000,
+      randomBytes: (size) => new Uint8Array(size).fill(7),
+      fetchImpl: (async (url, init) => {
+        const parsed = new URL(String(url));
+        const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") {
+          diagnosticBodies.push(request);
+          return jsonResponse({ ok: true });
+        }
+        paths.push(parsed.pathname);
+        if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
+          return jsonResponse(liskovRuntimeBootstrapResponse());
+        }
+        if (parsed.pathname === "/api/jobs/secret-bootstrap") {
+          return jsonResponse(liskovSecretBootstrapResponse());
+        }
+        if (parsed.pathname === "/api/jobs/runtime-env") {
+          assert.equal(request.domain, "proof.liskov.runtime-env-request.v2");
+          assert.equal(request.applicationUid, APPLICATION_UID);
+          return jsonResponse(runtimeEnvResponse(APPLICATION_UID));
+        }
+        if (parsed.pathname === "/api/jobs/secret-requests") {
+          assert.equal(request.domain, "proof.lockbox.job-secret-request.v2");
+          assert.equal(request.applicationUid, APPLICATION_UID);
+          return jsonResponse(lockboxResponse(request as {
+            requestedSecretIds: string[];
+            domain?: string;
+            applicationUid?: string;
+          }));
+        }
+        throw new Error(`unexpected path ${parsed.pathname}`);
+      }) as typeof fetch
+    });
+    try {
+      assert.deepEqual(paths, [
+        "/api/jobs/runtime-bootstrap",
+        "/api/jobs/secret-bootstrap",
+        "/api/jobs/runtime-env",
+        "/api/jobs/secret-requests"
+      ]);
+      assert.equal(env.RUNTIME_VALUE, "ok");
+      assert.equal(env.API_TOKEN, "secret");
+      const runtimeDiagnosticMessage = JSON.parse(signedMessages[2]!) as Record<string, unknown>;
+      assert.equal(runtimeDiagnosticMessage.domain, "proof.liskov.runtime-diagnostic.v4");
+      assert.equal(runtimeDiagnosticMessage.applicationUid, APPLICATION_UID);
+      assert.equal(runtimeDiagnosticMessage.runtimeInstanceId, "07".repeat(16));
+      const startDiagnostic = diagnosticBodies.find((body) => body.stage === "runtime.start");
+      assert.equal(startDiagnostic?.domain, "proof.liskov.runtime-diagnostic.v4");
+      assert.equal(startDiagnostic?.applicationUid, APPLICATION_UID);
+    } finally {
+      handle.stop();
+    }
+  });
+
   it("replaces stale cross-job Blackbox config before background logging attaches", async () => {
     const staleDek = generateProofLogEncryptionKey();
     const currentDek = generateProofLogEncryptionKey();
