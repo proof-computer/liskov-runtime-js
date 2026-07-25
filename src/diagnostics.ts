@@ -10,6 +10,8 @@ export const SLIPWAY_RUNTIME_DIAGNOSTIC_DOMAIN = "proof.slipway.runtime-diagnost
 export const LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V2 = "proof.liskov.runtime-diagnostic.v2";
 export const LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V3 = "proof.liskov.runtime-diagnostic.v3";
 export const LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V4 = "proof.liskov.runtime-diagnostic.v4";
+export const LISKOV_RUNTIME_CONTROL_DOMAIN_V1 = "proof.liskov.runtime-control.v1";
+export const LISKOV_COOPERATIVE_CEASE_CAPABILITY = "cooperative_cease.v1";
 export const DEFAULT_SLIPWAY_RUNTIME_HEALTH_INTERVAL_MS = 30_000;
 export const DEFAULT_SLIPWAY_RUNTIME_HEALTH_INITIAL_DELAY_MS = 30_000;
 export const DEFAULT_SLIPWAY_RUNTIME_DIAGNOSTIC_SEND_TIMEOUT_MS = 1_500;
@@ -71,6 +73,21 @@ export interface LiskovRuntimeDiagnostics {
   fatal(event: LiskovRuntimeFatalReport): Promise<void>;
 }
 
+export interface LiskovRuntimeCeaseCommand {
+  kind: "cease";
+  commandId: string;
+  reason: string;
+  issuedAtMs: number;
+  expiresAtMs: number;
+  binding: {
+    applicationUid: string;
+    policyDigest: string;
+    deploymentId: string;
+    jobId: string;
+    runtimeInstanceId: string;
+  };
+}
+
 export interface SlipwayRuntimeDiagnosticEmitter extends LiskovRuntimeDiagnostics {
   emit(event: Omit<SlipwayRuntimeDiagnostic, "sequence" | "timestampMs">): Promise<void>;
   configureBootstrap(bootstrap: SlipwayRuntimeEnvConfig | undefined): void;
@@ -90,6 +107,11 @@ export interface SlipwayRuntimeDiagnosticEmitterOptions {
   setTimeoutImpl?: typeof setTimeout;
   clearTimeoutImpl?: typeof clearTimeout;
   onFatal?: () => void;
+  /**
+   * Cooperative application-work shutdown. Registering this callback advertises
+   * the v1 capability. The SDK invokes it at most once per command per process.
+   */
+  onCease?: (command: LiskovRuntimeCeaseCommand) => void | Promise<void>;
 }
 
 export interface SlipwayRuntimeHealthHandle {
@@ -132,6 +154,9 @@ export function createSlipwayRuntimeDiagnosticEmitter(
   let bootstrap = options.bootstrap;
   let closed = false;
   let fatalPromise: Promise<void> | undefined;
+  const handledCeaseCommands = new Set<string>();
+  const ignoredControls = new Set<string>();
+  let emitter: SlipwayRuntimeDiagnosticEmitter;
 
   const prepare = (
     event: Omit<SlipwayRuntimeDiagnostic, "sequence" | "timestampMs">
@@ -151,7 +176,44 @@ export function createSlipwayRuntimeDiagnosticEmitter(
       bootstrap,
       diagnostic,
       terminal,
-      remoteDisabledUntilMs
+      remoteDisabledUntilMs,
+      handleControl(control, binding) {
+        const parsed = parseRuntimeCeaseControl(control, binding, options.nowMs?.() ?? Date.now());
+        if ("error" in parsed) {
+          const fingerprint = JSON.stringify(control);
+          if (ignoredControls.has(fingerprint)) return;
+          ignoredControls.add(fingerprint);
+          queueMicrotask(() => {
+            void emitter.report({
+              stage: "runtime.control_ignored",
+              status: "failed",
+              component: "runtime-control",
+              code: parsed.error
+            });
+          });
+          return;
+        }
+        const command = parsed.command;
+        if (!options.onCease || handledCeaseCommands.has(command.commandId)) return;
+        handledCeaseCommands.add(command.commandId);
+        queueMicrotask(() => {
+          void Promise.resolve(options.onCease?.(command))
+            .then(() => emitter.report({
+              stage: "runtime.ceased",
+              status: "succeeded",
+              component: "runtime-control",
+              attrs: { commandId: command.commandId }
+            }))
+            .catch((error: unknown) => emitter.report({
+              stage: "runtime.cease_failed",
+              status: "failed",
+              component: "runtime-control",
+              code: "cease_handler_failed",
+              message: safeErrorMessage(error),
+              attrs: { commandId: command.commandId }
+            }));
+        });
+      }
     });
     const remote = terminal
       ? promiseWithTimeout(
@@ -167,7 +229,7 @@ export function createSlipwayRuntimeDiagnosticEmitter(
     }
   };
 
-  const emitter: SlipwayRuntimeDiagnosticEmitter = {
+  emitter = {
     emit(event) {
       if (closed) return Promise.resolve();
       return deliver(prepare(event), false);
@@ -377,6 +439,7 @@ async function sendRemoteDiagnostic(input: SlipwayRuntimeDiagnosticEmitterOption
   diagnostic: SlipwayRuntimeDiagnostic;
   terminal: boolean;
   remoteDisabledUntilMs: number;
+  handleControl?: (control: unknown, binding: RuntimeControlBinding) => void;
 }): Promise<void> {
   if (!canSendRemoteDiagnostic(input)) return;
   if (!input.terminal && input.diagnostic.timestampMs < input.remoteDisabledUntilMs) return;
@@ -395,6 +458,7 @@ async function sendLiskovRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitte
   coreUrl: string;
   identityProvider: RuntimeIdentityProvider;
   diagnostic: SlipwayRuntimeDiagnostic;
+  handleControl?: (control: unknown, binding: RuntimeControlBinding) => void;
 }): Promise<void> {
   const fetchImpl = input.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") return;
@@ -413,6 +477,7 @@ async function sendLiskovRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitte
     message: input.diagnostic.message ?? input.diagnostic.error ?? null,
     attrs: {
       ...input.diagnostic.attrs,
+      ...(input.onCease ? { capabilities: LISKOV_COOPERATIVE_CEASE_CAPABILITY } : {}),
       ...(input.diagnostic.valueCount === undefined ? {} : { valueCount: input.diagnostic.valueCount }),
       ...(input.diagnostic.revision === undefined ? {} : { revision: input.diagnostic.revision })
     }
@@ -432,7 +497,7 @@ async function sendLiskovRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitte
       ? liskovRuntimeDiagnosticV2Message(payload)
       : liskovRuntimeDiagnosticV3Message(v3Payload)
   );
-  await postDiagnostic({ ...input, fetchImpl, url, body: {
+  const responseBody = await postDiagnostic({ ...input, fetchImpl, url, body: {
     domain: v4Payload !== undefined
       ? LISKOV_RUNTIME_DIAGNOSTIC_DOMAIN_V4
       : v3Payload === undefined
@@ -441,6 +506,19 @@ async function sendLiskovRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitte
     ...(v4Payload ?? v3Payload ?? payload),
     signature
   }});
+  if (v4Payload !== undefined && typeof responseBody === "object"
+    && responseBody !== null && !Array.isArray(responseBody)) {
+    const control = (responseBody as { control?: unknown }).control;
+    if (control !== undefined && control !== null) {
+      input.handleControl?.(control, {
+        applicationUid: v4Payload.applicationUid,
+        policyDigest: input.bootstrap?.policyDigest ?? "",
+        deploymentId: input.bootstrap?.deploymentId ?? "",
+        jobId: v4Payload.jobId,
+        runtimeInstanceId: v4Payload.runtimeInstanceId
+      });
+    }
+  }
 }
 
 async function sendSlipwayRuntimeDiagnosticV1(input: SlipwayRuntimeDiagnosticEmitterOptions & {
@@ -502,7 +580,7 @@ async function postDiagnostic(input: SlipwayRuntimeDiagnosticEmitterOptions & {
   fetchImpl: typeof fetch;
   url: URL;
   body: Record<string, unknown>;
-}): Promise<void> {
+}): Promise<unknown> {
   const controller = typeof AbortController === "function" ? new AbortController() : undefined;
   const fetchPromise = input.fetchImpl(input.url.toString(), {
     method: "POST",
@@ -520,6 +598,51 @@ async function postDiagnostic(input: SlipwayRuntimeDiagnosticEmitterOptions & {
   if (!response.ok) {
     throw new Error(`Liskov runtime diagnostic rejected request: ${response.status} ${(await response.text()).slice(0, 500)}`);
   }
+  const text = await response.text();
+  if (!text.trim()) return undefined;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface RuntimeControlBinding {
+  applicationUid: string;
+  policyDigest: string;
+  deploymentId: string;
+  jobId: string;
+  runtimeInstanceId: string;
+}
+
+export function parseRuntimeCeaseControl(
+  value: unknown,
+  expected: RuntimeControlBinding,
+  nowMs: number
+): { command: LiskovRuntimeCeaseCommand } | { error: string } {
+  if (value === undefined || value === null) return { error: "control_missing" };
+  if (typeof value !== "object" || Array.isArray(value)) return { error: "control_malformed" };
+  const envelope = value as Record<string, unknown>;
+  if (envelope.schema !== LISKOV_RUNTIME_CONTROL_DOMAIN_V1) return { error: "control_schema_invalid" };
+  if (typeof envelope.command !== "object" || envelope.command === null || Array.isArray(envelope.command)) {
+    return { error: "control_command_malformed" };
+  }
+  const command = envelope.command as Record<string, unknown>;
+  if (command.kind !== "cease" ||
+      typeof command.commandId !== "string" || command.commandId.length === 0 ||
+      typeof command.reason !== "string" ||
+      !Number.isSafeInteger(command.issuedAtMs) ||
+      !Number.isSafeInteger(command.expiresAtMs) ||
+      typeof command.binding !== "object" || command.binding === null ||
+      Array.isArray(command.binding)) {
+    return { error: "control_command_malformed" };
+  }
+  if ((command.expiresAtMs as number) <= nowMs) return { error: "control_expired" };
+  const binding = command.binding as Record<string, unknown>;
+  for (const key of ["applicationUid", "policyDigest", "deploymentId", "jobId", "runtimeInstanceId"] as const) {
+    if (binding[key] !== expected[key]) return { error: "control_binding_mismatch" };
+  }
+  return { command: command as unknown as LiskovRuntimeCeaseCommand };
 }
 
 function diagnosticSendTimeoutMs(input: SlipwayRuntimeDiagnosticEmitterOptions): number {

@@ -11,6 +11,7 @@ import {
   liskovRuntimeDiagnosticV2Message,
   liskovRuntimeDiagnosticV3Message,
   liskovRuntimeDiagnosticV4Message,
+  parseRuntimeCeaseControl,
   startSlipwayRuntimeHealth,
   slipwayRuntimeDiagnosticRequestMessage
 } from "../src/diagnostics.js";
@@ -403,5 +404,97 @@ describe("UID-bound v4 diagnostics", () => {
     assert.equal(calls[0].body.domain, "proof.liskov.runtime-diagnostic.v4");
     assert.equal(calls[0].body.applicationUid, "app-0123456789abcdef0123456789abcdef");
     assert.match(signed[0], /"applicationUid":"app-0123456789abcdef0123456789abcdef"/u);
+  });
+
+  it("advertises cease capability, invokes once, and acknowledges asynchronously", async () => {
+    const calls: RecordedCall[] = [];
+    let ceaseCalls = 0;
+    let acknowledged!: () => void;
+    const acknowledgement = new Promise<void>((resolve) => { acknowledged = resolve; });
+    const control = {
+      schema: "proof.liskov.runtime-control.v1",
+      command: {
+        kind: "cease",
+        commandId: "cease-1",
+        reason: "successor_runtime_ready",
+        issuedAtMs: FIXED_NOW - 1,
+        expiresAtMs: FIXED_NOW + 60_000,
+        binding: {
+          applicationUid: "app-0123456789abcdef0123456789abcdef",
+          policyDigest: "ABCDEF",
+          deploymentId: "dep-1",
+          jobId: "job-1",
+          runtimeInstanceId: "instance-new"
+        }
+      }
+    };
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push({ url: String(input), body });
+      if (body.stage === "runtime.ceased") acknowledged();
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ ok: true, control });
+        }
+      } as Response;
+    }) as typeof fetch;
+    const emitter = createSlipwayRuntimeDiagnosticEmitter({
+      coreUrl: "https://liskov.test",
+      bootstrap: baseBootstrap({
+        runtimeInstanceId: "instance-new",
+        applicationUid: "app-0123456789abcdef0123456789abcdef"
+      }),
+      identityProvider: recordingIdentityProvider([]),
+      fetchImpl,
+      nowMs: () => FIXED_NOW,
+      async onCease(command) {
+        ceaseCalls += 1;
+        assert.equal(command.commandId, "cease-1");
+      }
+    });
+
+    await emitter.report({ stage: "runtime.health", status: "info" });
+    await acknowledgement;
+    await emitter.report({ stage: "runtime.health", status: "info" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal((calls[0].body.attrs as Record<string, unknown>).capabilities, "cooperative_cease.v1");
+    assert.equal(ceaseCalls, 1);
+    assert.equal(calls.filter((call) => call.body.stage === "runtime.ceased").length, 1);
+  });
+
+  it("rejects stale and foreign controls without invoking application work", () => {
+    const expected = {
+      applicationUid: "app-uid",
+      policyDigest: "digest",
+      deploymentId: "dep",
+      jobId: "job",
+      runtimeInstanceId: "runtime"
+    };
+    const base = {
+      schema: "proof.liskov.runtime-control.v1",
+      command: {
+        kind: "cease",
+        commandId: "cease-1",
+        reason: "update",
+        issuedAtMs: 1,
+        expiresAtMs: 100,
+        binding: expected
+      }
+    };
+    assert.deepEqual(parseRuntimeCeaseControl(base, expected, 100), { error: "control_expired" });
+    assert.deepEqual(
+      parseRuntimeCeaseControl({
+        ...base,
+        command: {
+          ...base.command,
+          expiresAtMs: 200,
+          binding: { ...expected, jobId: "foreign" }
+        }
+      }, expected, 100),
+      { error: "control_binding_mismatch" }
+    );
   });
 });
