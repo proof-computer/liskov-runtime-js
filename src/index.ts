@@ -86,6 +86,7 @@ export interface SlipwayRuntimeStatus {
   ok: boolean;
   ready: boolean;
   home: string;
+  applicationUid?: string;
   applicationId?: string;
   deploymentId?: string;
   revision?: string;
@@ -410,6 +411,7 @@ export async function bootstrapSlipwayRuntime(
     allowHostnames: (hostnames) => allowBootstrapHostnames(std, hostnames),
     canAttach: () => managedLoggingConfigReady,
     baseRecord: () => compactRuntimeRecord({
+      applicationUid: runtimeEnv?.response.applicationUid ?? slipwayConfig?.applicationUid ?? lockboxConfig?.applicationUid,
       applicationId: options.appId ?? runtimeEnv?.response.applicationId ?? slipwayConfig?.applicationId ?? lockboxConfig?.applicationId,
       deploymentId: runtimeEnv?.response.deploymentId ?? slipwayConfig?.deploymentId ?? lockboxConfig?.deploymentId,
       component: options.component,
@@ -1316,6 +1318,7 @@ function runtimeStatus(input: {
     ok: blockers.length === 0,
     ready: blockers.length === 0,
     home: input.home,
+    applicationUid: input.runtimeEnv?.response.applicationUid ?? input.slipwayConfig?.applicationUid ?? input.lockboxConfig?.applicationUid,
     applicationId: input.appId ?? input.runtimeEnv?.response.applicationId ?? input.slipwayConfig?.applicationId ?? input.lockboxConfig?.applicationId,
     deploymentId: input.runtimeEnv?.response.deploymentId ?? input.slipwayConfig?.deploymentId ?? input.lockboxConfig?.deploymentId,
     revision: input.revision ?? input.runtimeEnv?.response.revision,
@@ -1447,6 +1450,7 @@ function runtimeBootstrapAttrs(
     lockboxBootstrapSource: runtimeEnvSource("PROOF_LOCKBOX_BOOTSTRAP", lookup),
     slipwayHost: urlHostOrNull(slipwayConfig?.slipwayUrl),
     lockboxHost: urlHostOrNull(lockboxConfig?.lockboxUrl),
+    applicationUid: slipwayConfig?.applicationUid ?? lockboxConfig?.applicationUid ?? null,
     applicationId: slipwayConfig?.applicationId ?? lockboxConfig?.applicationId ?? null,
     deploymentId: slipwayConfig?.deploymentId ?? lockboxConfig?.deploymentId ?? null
   };

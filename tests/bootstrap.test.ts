@@ -268,6 +268,7 @@ describe("top-level Slipway runtime bootstrap", () => {
       assert.equal(handle.lockbox?.installed.env[0]?.name, "API_TOKEN");
       assert.equal(handle.status().capabilities.runtimeEnv.state, "ready");
       assert.equal(handle.status().capabilities.secrets.state, "ready");
+      assert.equal(handle.status().applicationUid, APPLICATION_UID);
       const runtimeBootstrapMessage = JSON.parse(signedMessages[0]!) as Record<string, unknown>;
       const secretBootstrapMessage = JSON.parse(signedMessages[1]!) as Record<string, unknown>;
       const runtimeDiagnosticMessage = JSON.parse(signedMessages[2]!) as Record<string, unknown>;
@@ -285,6 +286,7 @@ describe("top-level Slipway runtime bootstrap", () => {
       assert.equal(startDiagnostic.signature, "0x" + "11".repeat(64));
       assert.equal(startDiagnostic.jobId, "job-1");
       assert.equal(startDiagnostic.processorId, "processor-1");
+      assert.equal((startDiagnostic.attrs as Record<string, unknown>).applicationUid, APPLICATION_UID);
     } finally {
       handle.stop();
     }
@@ -467,10 +469,12 @@ describe("top-level Slipway runtime bootstrap", () => {
       ]);
       assert.equal(batches[0]?.sinkId, "sink-current");
       assert.equal(batches[0]?.jobId, "job-1");
-      assert.equal(
-        decryptProofLogRecord<Record<string, unknown>>(currentDek, batches[0]!.encrypted[0]!).event,
-        "before-current-grant"
+      const record = decryptProofLogRecord<Record<string, unknown>>(
+        currentDek,
+        batches[0]!.encrypted[0]!
       );
+      assert.equal(record.event, "before-current-grant");
+      assert.equal(record.applicationUid, APPLICATION_UID);
     } finally {
       handle.stop();
     }

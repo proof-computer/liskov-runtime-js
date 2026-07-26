@@ -1,0 +1,130 @@
+{
+  "schema": "proof.liskov.uid2-consumer-contracts.v1",
+  "authority": "proof-computer/liskov-rs",
+  "compatibility": {
+    "legacyUiSigning": {
+      "domain": "proof.slipway.runtime-diagnostic.v1",
+      "disposition": "version-pinned compatibility code; UID requires a new signed-envelope version"
+    },
+    "priorVersionsRemainAccepted": true
+  },
+  "identity": {
+    "applicationUid": "app-0123456789abcdef0123456789abcdef",
+    "applicationId": "generic-worker",
+    "deploymentId": "42",
+    "jobId": "job-1",
+    "processorId": "processor-1",
+    "policyDigest": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "runtimeBootstrapV2": {
+    "request": {
+      "domain": "proof.liskov.runtime-bootstrap-request.v2",
+      "jobId": "job-1",
+      "processorId": "processor-1",
+      "nonce": "bootstrap-nonce",
+      "issuedAtMs": 1000,
+      "expiresAtMs": 61000
+    },
+    "requestCanonical": "{\"domain\":\"proof.liskov.runtime-bootstrap-request.v2\",\"expiresAtMs\":61000,\"issuedAtMs\":1000,\"jobId\":\"job-1\",\"nonce\":\"bootstrap-nonce\",\"processorId\":\"processor-1\"}",
+    "responseBindings": {
+      "domain": "proof.liskov.runtime-bootstrap-response.v2",
+      "applicationUid": "app-0123456789abcdef0123456789abcdef",
+      "applicationId": "generic-worker",
+      "deploymentId": "42",
+      "jobId": "job-1",
+      "processorId": "processor-1",
+      "runtimeInstanceId": "07070707070707070707070707070707"
+    }
+  },
+  "runtimeEnvironmentV2": {
+    "requestCanonical": "{\"applicationId\":\"generic-worker\",\"applicationUid\":\"app-0123456789abcdef0123456789abcdef\",\"deploymentId\":\"42\",\"domain\":\"proof.liskov.runtime-env-request.v2\",\"expiresAtMs\":61000,\"issuedAtMs\":1000,\"jobId\":\"job-1\",\"nonce\":\"runtime-nonce\",\"policyDigest\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"processorId\":\"processor-1\"}",
+    "responseBindings": [
+      "applicationUid",
+      "applicationId",
+      "deploymentId",
+      "jobId",
+      "processorId",
+      "policyDigest",
+      "revision"
+    ]
+  },
+  "lockboxV2": {
+    "requestCanonical": "{\"applicationId\":\"generic-worker\",\"applicationUid\":\"app-0123456789abcdef0123456789abcdef\",\"deploymentId\":\"42\",\"domain\":\"proof.lockbox.job-secret-request.v2\",\"expiresAtMs\":61000,\"grantId\":\"grant-1\",\"issuedAtMs\":1000,\"jobId\":\"job-1\",\"nonce\":\"nonce-1\",\"policyDigest\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"processorId\":\"processor-1\",\"requestedSecretIds\":[\"api-token\",\"file-config\"],\"responseEncryptionKey\":\"ababababababababababababababababababababababababababababababababab\"}",
+    "responseAad": "{\"applicationId\":\"generic-worker\",\"applicationUid\":\"app-0123456789abcdef0123456789abcdef\",\"deploymentId\":\"42\",\"domain\":\"proof.lockbox.job-secret-response.aad.v2\",\"grantId\":\"grant-1\",\"jobId\":\"job-1\",\"policyDigest\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"processorId\":\"processor-1\",\"requestId\":\"lockbox-request-1\"}",
+    "plaintextResponseBindings": [
+      "applicationUid",
+      "applicationId",
+      "deploymentId",
+      "grantId",
+      "jobId",
+      "processorId",
+      "policyDigest",
+      "requestId"
+    ],
+    "encryptedPayloadBindings": {
+      "domain": "proof.lockbox.job-secret-response.encrypted-payload.v2",
+      "version": "acurast-p256-hkdf-aes-256-gcm-v2",
+      "requiresAadDigest": true,
+      "requiresEncryptedPayloadDigest": true
+    }
+  },
+  "runtimeDiagnosticsV4": {
+    "canonical": "{\"applicationUid\":\"app-0123456789abcdef0123456789abcdef\",\"attrs\":{\"ready\":true},\"code\":null,\"component\":\"runtime-health\",\"domain\":\"proof.liskov.runtime-diagnostic.v4\",\"jobId\":\"job-1\",\"message\":null,\"processorId\":\"processor-1\",\"runtimeInstanceId\":\"07070707070707070707070707070707\",\"sequence\":0,\"stage\":\"runtime.health\",\"status\":\"info\",\"timestampMs\":1719230000000}"
+  },
+  "blackboxLogConfigurationV2": {
+    "domain": "proof.liskov.blackbox-log-config.v2",
+    "requiredBindings": [
+      "applicationUid",
+      "applicationId",
+      "jobId",
+      "profileRevision"
+    ],
+    "revisionBinding": {
+      "requestField": "profileRevision",
+      "profileField": "revision",
+      "mismatchError": "blackbox_profile_mismatch"
+    }
+  },
+  "negativeCases": [
+    {
+      "protocol": "runtime-bootstrap-v2",
+      "mutation": "response.applicationUid",
+      "expected": "binding mismatch"
+    },
+    {
+      "protocol": "runtime-env-v2",
+      "mutation": "response.applicationId",
+      "expected": "binding mismatch"
+    },
+    {
+      "protocol": "lockbox-v2",
+      "mutation": "plaintext.jobId",
+      "expected": "binding mismatch"
+    },
+    {
+      "protocol": "runtime-env-v2",
+      "mutation": "response.domain=v1",
+      "expected": "protocol downgrade"
+    },
+    {
+      "protocol": "lockbox-v2",
+      "mutation": "response.domain=v1",
+      "expected": "protocol downgrade"
+    },
+    {
+      "protocol": "runtime-diagnostics-v4",
+      "mutation": "signature",
+      "expected": "signature_invalid"
+    },
+    {
+      "protocol": "blackbox-config-v2",
+      "mutation": "profileRevision",
+      "expected": "blackbox_profile_mismatch"
+    },
+    {
+      "protocol": "blackbox-config-v2",
+      "mutation": "applicationUid",
+      "expected": "blackbox_profile_mismatch"
+    }
+  ]
+}

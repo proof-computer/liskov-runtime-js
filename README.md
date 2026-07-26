@@ -23,7 +23,7 @@ The first supported dependency source is the public GitHub release tag:
 ```json
 {
   "dependencies": {
-    "@proof-computer/liskov-runtime": "github:proof-computer/liskov-runtime-js#v0.3.25"
+    "@proof-computer/liskov-runtime": "github:proof-computer/liskov-runtime-js#v0.3.26"
   }
 }
 ```
@@ -71,6 +71,11 @@ bootstrap configuration delivered in the initial environment. This preserves
 the UID from the v2 response for Runtime Environment v2, Lockbox v2, and
 runtime diagnostics v4 instead of silently continuing on the legacy
 identifier-only configuration.
+
+Runtime v0.3.26 propagates that authenticated UID into the optional
+`status().applicationUid` field, runtime-start capability attributes, and the
+base structured log record. Legacy v1 inputs continue to omit the field; the
+SDK never derives a UID from an Application slug.
 
 ## Minimal Entrypoint
 
@@ -443,6 +448,7 @@ interface SlipwayRuntimeStatus {
   ok: boolean;
   ready: boolean;
   home: string;
+  applicationUid?: string;
   applicationId?: string;
   deploymentId?: string;
   revision?: string;
