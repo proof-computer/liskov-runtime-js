@@ -509,6 +509,11 @@ async function sendLiskovRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitte
   const url = new URL("/api/jobs/runtime-diagnostics", input.coreUrl);
   assertSecureRuntimeUrl(url, input.allowInsecureHttp, "Liskov runtime diagnostics");
   const identity = await input.identityProvider.resolveIdentity({ requireEncryptionKey: false });
+  const runtimeInstanceId = input.bootstrap?.runtimeInstanceId;
+  const applicationUid = input.bootstrap?.applicationUid;
+  const canReceiveV4Control = input.onCease !== undefined
+    && runtimeInstanceId !== undefined
+    && applicationUid !== undefined;
   const payload = canonicalLiskovRuntimeDiagnosticV2Payload({
     jobId: identity.jobId,
     processorId: identity.processorId,
@@ -521,16 +526,14 @@ async function sendLiskovRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitte
     message: input.diagnostic.message ?? input.diagnostic.error ?? null,
     attrs: {
       ...input.diagnostic.attrs,
-      ...(input.onCease ? { capabilities: LISKOV_COOPERATIVE_CEASE_CAPABILITY } : {}),
+      ...(canReceiveV4Control ? { capabilities: LISKOV_COOPERATIVE_CEASE_CAPABILITY } : {}),
       ...(input.diagnostic.valueCount === undefined ? {} : { valueCount: input.diagnostic.valueCount }),
       ...(input.diagnostic.revision === undefined ? {} : { revision: input.diagnostic.revision })
     }
   });
-  const runtimeInstanceId = input.bootstrap?.runtimeInstanceId;
   const v3Payload = runtimeInstanceId === undefined
     ? undefined
     : canonicalLiskovRuntimeDiagnosticV3Payload({ ...payload, runtimeInstanceId });
-  const applicationUid = input.bootstrap?.applicationUid;
   const v4Payload = v3Payload === undefined || applicationUid === undefined
     ? undefined
     : canonicalLiskovRuntimeDiagnosticV4Payload({ ...v3Payload, applicationUid });

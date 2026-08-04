@@ -367,6 +367,26 @@ describe("runtime-instance v3 diagnostics", () => {
     assert.equal(oldCalls[0].body.runtimeInstanceId, undefined);
   });
 
+  it("does not advertise cooperative cease on v2 or v3 paths that cannot receive bound control", async () => {
+    for (const [bootstrap, expectedDomain] of [
+      [baseBootstrap(), "proof.liskov.runtime-diagnostic.v2"],
+      [baseBootstrap({ runtimeInstanceId: "instance-new" }), "proof.liskov.runtime-diagnostic.v3"]
+    ] as const) {
+      const calls: RecordedCall[] = [];
+      const emitter = createSlipwayRuntimeDiagnosticEmitter({
+        coreUrl: "https://liskov.test",
+        bootstrap,
+        identityProvider: recordingIdentityProvider([]),
+        fetchImpl: recordingFetch(calls),
+        nowMs: () => FIXED_NOW,
+        async onCease() {}
+      });
+      await emitter.report({ stage: "runtime.health", status: "info" });
+      assert.equal(calls[0].body.domain, expectedDomain);
+      assert.equal((calls[0].body.attrs as Record<string, unknown> | null)?.capabilities, undefined);
+    }
+  });
+
   it("lets separate process emitters both begin at sequence zero", async () => {
     const first: RecordedCall[] = [];
     const second: RecordedCall[] = [];
@@ -426,10 +446,13 @@ describe("UID-bound v4 diagnostics", () => {
     assert.match(signed[0], /"applicationUid":"app-0123456789abcdef0123456789abcdef"/u);
   });
 
-  it("advertises cease capability and retries a lost success acknowledgement without reinvoking", async () => {
+  it("retries a rejected acknowledgement after backoff and redelivery without reinvoking", async () => {
     const calls: RecordedCall[] = [];
+    let nowMs = FIXED_NOW;
     let ceaseCalls = 0;
     let acknowledgementCount = 0;
+    let firstAcknowledgementSettled!: () => void;
+    const firstAcknowledgement = new Promise<void>((resolve) => { firstAcknowledgementSettled = resolve; });
     let acknowledgedTwice!: () => void;
     const twoAcknowledgements = new Promise<void>((resolve) => { acknowledgedTwice = resolve; });
     const control = ceaseControl();
@@ -438,13 +461,16 @@ describe("UID-bound v4 diagnostics", () => {
       calls.push({ url: String(input), body });
       if (body.stage === "runtime.ceased") {
         acknowledgementCount += 1;
+        if (acknowledgementCount === 1) firstAcknowledgementSettled();
         if (acknowledgementCount === 2) acknowledgedTwice();
       }
       return {
-        ok: true,
-        status: 200,
+        ok: body.stage !== "runtime.ceased" || acknowledgementCount > 1,
+        status: body.stage === "runtime.ceased" && acknowledgementCount === 1 ? 503 : 200,
         async text() {
-          return JSON.stringify(body.stage === "runtime.ceased" ? { ok: true } : { ok: true, control });
+          return JSON.stringify(body.stage === "runtime.ceased"
+            ? { ok: acknowledgementCount > 1 }
+            : { ok: true, control });
         }
       } as Response;
     }) as typeof fetch;
@@ -456,7 +482,7 @@ describe("UID-bound v4 diagnostics", () => {
       }),
       identityProvider: recordingIdentityProvider([]),
       fetchImpl,
-      nowMs: () => FIXED_NOW,
+      nowMs: () => nowMs,
       async onCease(command) {
         ceaseCalls += 1;
         assert.equal(command.commandId, "cease-1");
@@ -464,7 +490,14 @@ describe("UID-bound v4 diagnostics", () => {
     });
 
     await emitter.report({ stage: "runtime.health", status: "info" });
+    await firstAcknowledgement;
     await new Promise((resolve) => setImmediate(resolve));
+    const callsBeforeBackoffProbe = calls.length;
+    nowMs += 29_999;
+    await emitter.report({ stage: "runtime.health", status: "info" });
+    assert.equal(calls.length, callsBeforeBackoffProbe);
+
+    nowMs += 1;
     await emitter.report({ stage: "runtime.health", status: "info" });
     await twoAcknowledgements;
 
