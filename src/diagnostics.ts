@@ -146,6 +146,15 @@ export interface LiskovRuntimeDiagnosticV4Payload extends LiskovRuntimeDiagnosti
   applicationUid: string;
 }
 
+type CeaseCommandOutcome =
+  | { status: "succeeded" }
+  | { status: "failed"; message: string };
+
+interface CeaseCommandState {
+  outcome?: CeaseCommandOutcome;
+  acknowledgementInFlight: boolean;
+}
+
 export function createSlipwayRuntimeDiagnosticEmitter(
   options: SlipwayRuntimeDiagnosticEmitterOptions = {}
 ): SlipwayRuntimeDiagnosticEmitter {
@@ -154,9 +163,37 @@ export function createSlipwayRuntimeDiagnosticEmitter(
   let bootstrap = options.bootstrap;
   let closed = false;
   let fatalPromise: Promise<void> | undefined;
-  const handledCeaseCommands = new Set<string>();
+  const ceaseCommands = new Map<string, CeaseCommandState>();
   const ignoredControls = new Set<string>();
   let emitter: SlipwayRuntimeDiagnosticEmitter;
+
+  const reportCeaseOutcome = (
+    command: LiskovRuntimeCeaseCommand,
+    state: CeaseCommandState
+  ): void => {
+    if (!state.outcome || state.acknowledgementInFlight) return;
+    state.acknowledgementInFlight = true;
+    const report = state.outcome.status === "succeeded"
+      ? {
+          stage: "runtime.ceased",
+          status: "succeeded" as const,
+          component: "runtime-control",
+          attrs: { commandId: command.commandId }
+        }
+      : {
+          stage: "runtime.cease_failed",
+          status: "failed" as const,
+          component: "runtime-control",
+          code: "cease_handler_failed",
+          message: state.outcome.message,
+          attrs: { commandId: command.commandId }
+        };
+    queueMicrotask(() => {
+      void emitter.report(report).finally(() => {
+        state.acknowledgementInFlight = false;
+      });
+    });
+  };
 
   const prepare = (
     event: Omit<SlipwayRuntimeDiagnostic, "sequence" | "timestampMs">
@@ -194,24 +231,31 @@ export function createSlipwayRuntimeDiagnosticEmitter(
           return;
         }
         const command = parsed.command;
-        if (!options.onCease || handledCeaseCommands.has(command.commandId)) return;
-        handledCeaseCommands.add(command.commandId);
+        if (!options.onCease) return;
+        const existing = ceaseCommands.get(command.commandId);
+        if (existing) {
+          // A successful response to an acknowledgement can race the server's
+          // durable acknowledgement write and repeat the command. Wait for the
+          // next ordinary check-in before retrying so acknowledgements cannot
+          // recursively trigger themselves.
+          if (diagnostic.stage !== "runtime.ceased" && diagnostic.stage !== "runtime.cease_failed") {
+            reportCeaseOutcome(command, existing);
+          }
+          return;
+        }
+        const state: CeaseCommandState = { acknowledgementInFlight: false };
+        ceaseCommands.set(command.commandId, state);
         queueMicrotask(() => {
-          void Promise.resolve(options.onCease?.(command))
-            .then(() => emitter.report({
-              stage: "runtime.ceased",
-              status: "succeeded",
-              component: "runtime-control",
-              attrs: { commandId: command.commandId }
-            }))
-            .catch((error: unknown) => emitter.report({
-              stage: "runtime.cease_failed",
-              status: "failed",
-              component: "runtime-control",
-              code: "cease_handler_failed",
-              message: safeErrorMessage(error),
-              attrs: { commandId: command.commandId }
-            }));
+          void Promise.resolve()
+            .then(() => options.onCease?.(command))
+            .then(() => {
+              state.outcome = { status: "succeeded" };
+              reportCeaseOutcome(command, state);
+            })
+            .catch((error: unknown) => {
+              state.outcome = { status: "failed", message: safeErrorMessage(error) };
+              reportCeaseOutcome(command, state);
+            });
         });
       }
     });
@@ -465,6 +509,11 @@ async function sendLiskovRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitte
   const url = new URL("/api/jobs/runtime-diagnostics", input.coreUrl);
   assertSecureRuntimeUrl(url, input.allowInsecureHttp, "Liskov runtime diagnostics");
   const identity = await input.identityProvider.resolveIdentity({ requireEncryptionKey: false });
+  const runtimeInstanceId = input.bootstrap?.runtimeInstanceId;
+  const applicationUid = input.bootstrap?.applicationUid;
+  const canReceiveV4Control = input.onCease !== undefined
+    && runtimeInstanceId !== undefined
+    && applicationUid !== undefined;
   const payload = canonicalLiskovRuntimeDiagnosticV2Payload({
     jobId: identity.jobId,
     processorId: identity.processorId,
@@ -477,16 +526,14 @@ async function sendLiskovRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitte
     message: input.diagnostic.message ?? input.diagnostic.error ?? null,
     attrs: {
       ...input.diagnostic.attrs,
-      ...(input.onCease ? { capabilities: LISKOV_COOPERATIVE_CEASE_CAPABILITY } : {}),
+      ...(canReceiveV4Control ? { capabilities: LISKOV_COOPERATIVE_CEASE_CAPABILITY } : {}),
       ...(input.diagnostic.valueCount === undefined ? {} : { valueCount: input.diagnostic.valueCount }),
       ...(input.diagnostic.revision === undefined ? {} : { revision: input.diagnostic.revision })
     }
   });
-  const runtimeInstanceId = input.bootstrap?.runtimeInstanceId;
   const v3Payload = runtimeInstanceId === undefined
     ? undefined
     : canonicalLiskovRuntimeDiagnosticV3Payload({ ...payload, runtimeInstanceId });
-  const applicationUid = input.bootstrap?.applicationUid;
   const v4Payload = v3Payload === undefined || applicationUid === undefined
     ? undefined
     : canonicalLiskovRuntimeDiagnosticV4Payload({ ...v3Payload, applicationUid });

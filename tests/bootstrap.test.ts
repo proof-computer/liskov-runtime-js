@@ -292,6 +292,68 @@ describe("top-level Slipway runtime bootstrap", () => {
     }
   });
 
+  it("passes cooperative cease through the supported bootstrap options", async () => {
+    const diagnosticBodies: Record<string, unknown>[] = [];
+    let ceaseCalls = 0;
+    let acknowledged!: () => void;
+    const acknowledgement = new Promise<void>((resolve) => { acknowledged = resolve; });
+    const control = {
+      schema: "proof.liskov.runtime-control.v1",
+      command: {
+        kind: "cease",
+        commandId: "cease-bootstrap-1",
+        reason: "rollout_started",
+        issuedAtMs: 999,
+        expiresAtMs: 61_000,
+        binding: {
+          applicationUid: APPLICATION_UID,
+          policyDigest: "1".repeat(64),
+          deploymentId: "42",
+          jobId: "job-1",
+          runtimeInstanceId: "07".repeat(16)
+        }
+      }
+    };
+    const handle = await bootstrapSlipwayRuntime({
+      env: {},
+      bootstrap: { coreUrl: "https://liskov.test" },
+      secrets: { mode: "off" },
+      runtimeHealth: { intervalMs: 0 },
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      randomBytes: (size) => new Uint8Array(size).fill(7),
+      async onCease(command) {
+        ceaseCalls += 1;
+        assert.equal(command.commandId, "cease-bootstrap-1");
+      },
+      fetchImpl: (async (url, init) => {
+        const parsed = new URL(String(url));
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
+          return jsonResponse(liskovRuntimeBootstrapResponse());
+        }
+        if (parsed.pathname === "/api/jobs/runtime-env") {
+          return jsonResponse(runtimeEnvResponse(APPLICATION_UID));
+        }
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") {
+          diagnosticBodies.push(body);
+          if (body.stage === "runtime.ceased") acknowledged();
+          return jsonResponse(body.stage === "runtime.start" ? { ok: true, control } : { ok: true });
+        }
+        throw new Error(`unexpected path ${parsed.pathname}`);
+      }) as typeof fetch
+    });
+    try {
+      await acknowledgement;
+      assert.equal(ceaseCalls, 1);
+      const start = diagnosticBodies.find((body) => body.stage === "runtime.start");
+      assert.equal((start?.attrs as Record<string, unknown>).capabilities, "cooperative_cease.v1");
+      assert.equal(diagnosticBodies.filter((body) => body.stage === "runtime.ceased").length, 1);
+    } finally {
+      handle.stop();
+    }
+  });
+
   it("replaces legacy handoff configs with UID-bound signed bootstrap authority", async () => {
     const env: Record<string, string | undefined> = {
       PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({

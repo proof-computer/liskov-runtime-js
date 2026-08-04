@@ -77,6 +77,14 @@ Runtime v0.3.26 propagates that authenticated UID into the optional
 base structured log record. Legacy v1 inputs continue to omit the field; the
 SDK never derives a UID from an Application slug.
 
+Runtime v0.3.27 exposes cooperative cease through the supported bootstrap API.
+Registering `onCease` advertises `cooperative_cease.v1` on UID-bound V4
+diagnostics; older V2/V3 paths do not advertise a command they cannot receive.
+The SDK validates the identity-bound command, invokes the asynchronous handler
+at most once per command in each process, and retries the signed outcome on a
+later check-in if acknowledgement delivery was lost. A new process may handle
+a still-pending command after restart.
+
 ## Minimal Entrypoint
 
 Use `bootstrapSlipwayRuntime()` before importing Application code:
@@ -149,6 +157,9 @@ await bootstrapSlipwayRuntime({
   secrets: { mode: "required" },
   logging: { mode: "background", earlyBufferMaxRecords: 100 },
   runtimeHealth: { intervalMs: 30_000, initialDelayMs: 30_000 },
+  onCease: async (command) => {
+    await stopApplicationWork(command.reason);
+  },
   diagnostics: (event) => console.error(JSON.stringify(event))
 });
 ```
@@ -177,6 +188,9 @@ Common options:
   runtime-diagnostic delivery.
 - `runtimeHealth`: optional interval/initial-delay/send-timeout overrides for
   `runtime.health` diagnostics.
+- `onCease`: asynchronous cooperative application-work shutdown. Registering
+  it advertises `cooperative_cease.v1` on UID-bound V4 diagnostics; Liskov never
+  stops the paid on-chain job.
 
 Test hooks:
 
