@@ -25,6 +25,7 @@ import {
 import {
   createSlipwayRuntimeDiagnosticEmitter,
   startSlipwayRuntimeHealth,
+  type LiskovRuntimeCeaseCommand,
   type SlipwayRuntimeDiagnostic,
   type LiskovRuntimeDiagnostics,
   type SlipwayRuntimeHealthHandle
@@ -164,6 +165,12 @@ export interface BootstrapSlipwayRuntimeOptions {
   nowMs?: () => number;
   randomBytes?: RuntimeRandomBytes;
   diagnostics?: (event: SlipwayRuntimeDiagnostic) => void | Promise<void>;
+  /**
+   * Cooperative application-work shutdown. Registering this callback advertises
+   * cooperative_cease.v1. The callback runs at most once per command in each
+   * process; acknowledgement delivery remains retryable across check-ins.
+   */
+  onCease?: (command: LiskovRuntimeCeaseCommand) => void | Promise<void>;
   diagnosticSendTimeoutMs?: number;
   diagnosticRemoteBackoffMs?: number;
   runtimeHealth?: {
@@ -333,6 +340,7 @@ export async function bootstrapSlipwayRuntime(
     fetchImpl: options.fetchImpl,
     nowMs: options.nowMs,
     diagnostics: options.diagnostics,
+    onCease: options.onCease,
     diagnosticSendTimeoutMs: options.diagnosticSendTimeoutMs ?? options.runtimeHealth?.sendTimeoutMs,
     diagnosticRemoteBackoffMs: options.diagnosticRemoteBackoffMs,
     setTimeoutImpl: options.setTimeoutImpl,

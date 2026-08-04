@@ -46,6 +46,26 @@ function baseBootstrap(overrides: Partial<SlipwayRuntimeEnvConfig> = {}): Slipwa
   };
 }
 
+function ceaseControl(commandId = "cease-1") {
+  return {
+    schema: "proof.liskov.runtime-control.v1",
+    command: {
+      kind: "cease",
+      commandId,
+      reason: "successor_runtime_ready",
+      issuedAtMs: FIXED_NOW - 1,
+      expiresAtMs: FIXED_NOW + 60_000,
+      binding: {
+        applicationUid: "app-0123456789abcdef0123456789abcdef",
+        policyDigest: "ABCDEF",
+        deploymentId: "dep-1",
+        jobId: "job-1",
+        runtimeInstanceId: "instance-new"
+      }
+    }
+  };
+}
+
 function recordingIdentityProvider(signedMessages: string[]): RuntimeIdentityProvider {
   return {
     async resolveIdentity() {
@@ -406,37 +426,25 @@ describe("UID-bound v4 diagnostics", () => {
     assert.match(signed[0], /"applicationUid":"app-0123456789abcdef0123456789abcdef"/u);
   });
 
-  it("advertises cease capability, invokes once, and acknowledges asynchronously", async () => {
+  it("advertises cease capability and retries a lost success acknowledgement without reinvoking", async () => {
     const calls: RecordedCall[] = [];
     let ceaseCalls = 0;
-    let acknowledged!: () => void;
-    const acknowledgement = new Promise<void>((resolve) => { acknowledged = resolve; });
-    const control = {
-      schema: "proof.liskov.runtime-control.v1",
-      command: {
-        kind: "cease",
-        commandId: "cease-1",
-        reason: "successor_runtime_ready",
-        issuedAtMs: FIXED_NOW - 1,
-        expiresAtMs: FIXED_NOW + 60_000,
-        binding: {
-          applicationUid: "app-0123456789abcdef0123456789abcdef",
-          policyDigest: "ABCDEF",
-          deploymentId: "dep-1",
-          jobId: "job-1",
-          runtimeInstanceId: "instance-new"
-        }
-      }
-    };
+    let acknowledgementCount = 0;
+    let acknowledgedTwice!: () => void;
+    const twoAcknowledgements = new Promise<void>((resolve) => { acknowledgedTwice = resolve; });
+    const control = ceaseControl();
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       calls.push({ url: String(input), body });
-      if (body.stage === "runtime.ceased") acknowledged();
+      if (body.stage === "runtime.ceased") {
+        acknowledgementCount += 1;
+        if (acknowledgementCount === 2) acknowledgedTwice();
+      }
       return {
         ok: true,
         status: 200,
         async text() {
-          return JSON.stringify({ ok: true, control });
+          return JSON.stringify(body.stage === "runtime.ceased" ? { ok: true } : { ok: true, control });
         }
       } as Response;
     }) as typeof fetch;
@@ -456,13 +464,103 @@ describe("UID-bound v4 diagnostics", () => {
     });
 
     await emitter.report({ stage: "runtime.health", status: "info" });
-    await acknowledgement;
-    await emitter.report({ stage: "runtime.health", status: "info" });
     await new Promise((resolve) => setImmediate(resolve));
+    await emitter.report({ stage: "runtime.health", status: "info" });
+    await twoAcknowledgements;
 
     assert.equal((calls[0].body.attrs as Record<string, unknown>).capabilities, "cooperative_cease.v1");
     assert.equal(ceaseCalls, 1);
-    assert.equal(calls.filter((call) => call.body.stage === "runtime.ceased").length, 1);
+    assert.equal(calls.filter((call) => call.body.stage === "runtime.ceased").length, 2);
+  });
+
+  it("retries a lost failure acknowledgement without reinvoking the failed handler", async () => {
+    const calls: RecordedCall[] = [];
+    let ceaseCalls = 0;
+    let failureCount = 0;
+    let failedTwice!: () => void;
+    const twoFailures = new Promise<void>((resolve) => { failedTwice = resolve; });
+    const control = ceaseControl("cease-failure");
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      calls.push({ url: String(input), body });
+      if (body.stage === "runtime.cease_failed") {
+        failureCount += 1;
+        if (failureCount === 2) failedTwice();
+      }
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify(body.stage === "runtime.cease_failed" ? { ok: true } : { ok: true, control });
+        }
+      } as Response;
+    }) as typeof fetch;
+    const emitter = createSlipwayRuntimeDiagnosticEmitter({
+      coreUrl: "https://liskov.test",
+      bootstrap: baseBootstrap({
+        runtimeInstanceId: "instance-new",
+        applicationUid: "app-0123456789abcdef0123456789abcdef"
+      }),
+      identityProvider: recordingIdentityProvider([]),
+      fetchImpl,
+      nowMs: () => FIXED_NOW,
+      async onCease() {
+        ceaseCalls += 1;
+        throw new Error("diagnostic cease failed");
+      }
+    });
+
+    await emitter.report({ stage: "runtime.health", status: "info" });
+    await new Promise((resolve) => setImmediate(resolve));
+    await emitter.report({ stage: "runtime.health", status: "info" });
+    await twoFailures;
+
+    assert.equal(ceaseCalls, 1);
+    assert.equal(calls.filter((call) => call.body.stage === "runtime.cease_failed").length, 2);
+    assert.equal(
+      calls.find((call) => call.body.stage === "runtime.cease_failed")?.body.message,
+      "diagnostic cease failed"
+    );
+  });
+
+  it("allows a still-pending command to run once again after process restart", async () => {
+    let ceaseCalls = 0;
+    const runProcess = async () => {
+      let delivered = false;
+      let acknowledged!: () => void;
+      const acknowledgement = new Promise<void>((resolve) => { acknowledged = resolve; });
+      const emitter = createSlipwayRuntimeDiagnosticEmitter({
+        coreUrl: "https://liskov.test",
+        bootstrap: baseBootstrap({
+          runtimeInstanceId: "instance-new",
+          applicationUid: "app-0123456789abcdef0123456789abcdef"
+        }),
+        identityProvider: recordingIdentityProvider([]),
+        nowMs: () => FIXED_NOW,
+        fetchImpl: (async (_input, init) => {
+          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          if (body.stage === "runtime.ceased") acknowledged();
+          const response = !delivered && body.stage === "runtime.health"
+            ? { ok: true, control: ceaseControl("cease-restart") }
+            : { ok: true };
+          delivered = true;
+          return {
+            ok: true,
+            status: 200,
+            async text() { return JSON.stringify(response); }
+          } as Response;
+        }) as typeof fetch,
+        async onCease() {
+          ceaseCalls += 1;
+        }
+      });
+      await emitter.report({ stage: "runtime.health", status: "info" });
+      await acknowledgement;
+    };
+
+    await runProcess();
+    await runProcess();
+    assert.equal(ceaseCalls, 2);
   });
 
   it("rejects stale and foreign controls without invoking application work", () => {
