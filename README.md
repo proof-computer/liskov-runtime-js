@@ -78,11 +78,12 @@ base structured log record. Legacy v1 inputs continue to omit the field; the
 SDK never derives a UID from an Application slug.
 
 Runtime v0.3.27 exposes cooperative cease through the supported bootstrap API.
-Registering `onCease` advertises `cooperative_cease.v1`; the SDK validates the
-identity-bound command, invokes the asynchronous handler at most once per
-command in each process, and retries the signed outcome on a later check-in if
-acknowledgement delivery was lost. A new process may handle a still-pending
-command after restart.
+Registering `onCease` advertises `cooperative_cease.v1` on UID-bound V4
+diagnostics; older V2/V3 paths do not advertise a command they cannot receive.
+The SDK validates the identity-bound command, invokes the asynchronous handler
+at most once per command in each process, and retries the signed outcome on a
+later check-in if acknowledgement delivery was lost. A new process may handle
+a still-pending command after restart.
 
 ## Minimal Entrypoint
 
@@ -188,7 +189,8 @@ Common options:
 - `runtimeHealth`: optional interval/initial-delay/send-timeout overrides for
   `runtime.health` diagnostics.
 - `onCease`: asynchronous cooperative application-work shutdown. Registering
-  it advertises `cooperative_cease.v1`; Liskov never stops the paid on-chain job.
+  it advertises `cooperative_cease.v1` on UID-bound V4 diagnostics; Liskov never
+  stops the paid on-chain job.
 
 Test hooks:
 
