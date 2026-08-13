@@ -59,6 +59,10 @@
       "types": "./dist/proof-log-crypto.d.ts",
       "import": "./dist/proof-log-crypto.js"
     },
+    "./processor-coverage": {
+      "types": "./dist/processor-coverage.d.ts",
+      "import": "./dist/processor-coverage.js"
+    },
     "./runtime-env": {
       "types": "./dist/runtime-env.d.ts",
       "import": "./dist/runtime-env.js"

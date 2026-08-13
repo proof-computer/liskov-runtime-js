@@ -57,6 +57,7 @@ export * from "./home.js";
 export * from "./lockbox.js";
 export * from "./process-failures.js";
 export * from "./proof-log-crypto.js";
+export * from "./processor-coverage.js";
 export * from "./runtime-env.js";
 
 export type SlipwayRuntimeCapabilityState = "off" | "pending" | "ready" | "degraded" | "failed" | "blocked";

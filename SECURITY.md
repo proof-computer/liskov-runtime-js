@@ -55,6 +55,12 @@ Use this checklist before cutting a public
 - V4 diagnostic signatures must additionally bind the authenticated
   `applicationUid`; a UID-bearing bootstrap response must never downgrade to a
   v2 or v3 diagnostic.
+- Processor coverage uses the separate
+  `proof.liskov.processor-coverage-result.v1` envelope. Its signature binds the
+  application, policy, artifact, cycle, target, occurrence placement,
+  processor, probe/profile versions, bounded outcomes, normalized metric
+  digest, challenge, and replay subject. It must never reuse or alter a runtime
+  diagnostics signature.
 - Slipway logging batches must contain encrypted log records only.
 
 ## Package Artifact
