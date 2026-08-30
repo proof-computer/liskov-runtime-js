@@ -1,7 +1,9 @@
 import { Buffer } from "node:buffer";
 
 import type { RuntimeIdentityProvider } from "./acurast.js";
+import { LISKOV_BOOTSTRAP_ENV, LISKOV_BOOTSTRAP_ENV_NAMES } from "./env-names.js";
 import {
+  getFirstRuntimeEnvValue,
   getRuntimeEnvValue,
   optionalBooleanEnv,
   optionalIntegerEnv,
@@ -125,7 +127,9 @@ export interface SlipwayRuntimeEnvRefreshHandle {
 }
 
 export function readSlipwayRuntimeEnvConfig(options: RuntimeEnvLookupOptions = {}): SlipwayRuntimeEnvConfig | undefined {
-  const raw = getRuntimeEnvValue("PROOF_SLIPWAY_BOOTSTRAP", options);
+  // BKLG-20260829-m8kd step 1: prefer LISKOV_BOOTSTRAP, fall back to the legacy
+  // PROOF_SLIPWAY_BOOTSTRAP name the platform still emits.
+  const raw = getFirstRuntimeEnvValue(LISKOV_BOOTSTRAP_ENV_NAMES, options);
   if (!raw) return undefined;
   return slipwayRuntimeEnvConfigFromBootstrap(raw, options);
 }
@@ -134,7 +138,7 @@ export function slipwayRuntimeEnvConfigFromBootstrap(
   rawBootstrap: string,
   options: RuntimeEnvLookupOptions = {}
 ): SlipwayRuntimeEnvConfig {
-  const record = asRecord(JSON.parse(rawBootstrap) as unknown, "PROOF_SLIPWAY_BOOTSTRAP");
+  const record = asRecord(JSON.parse(rawBootstrap) as unknown, LISKOV_BOOTSTRAP_ENV);
   return {
     slipwayUrl: requiredStringAlias(record, "u", "url", "slipwayUrl"),
     ...(bootstrapApplicationUid(record) === undefined

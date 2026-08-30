@@ -3,7 +3,9 @@ import { chmod, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { RuntimeIdentityProvider } from "./acurast.js";
+import { LOCKBOX_BOOTSTRAP_ENV, LOCKBOX_BOOTSTRAP_ENV_NAMES } from "./env-names.js";
 import {
+  getFirstRuntimeEnvValue,
   getRuntimeEnvValue,
   optionalBooleanEnv,
   optionalIntegerEnv,
@@ -210,7 +212,9 @@ export interface LockboxRuntimeLoadResult {
 }
 
 export function readLockboxRuntimeConfig(options: RuntimeEnvLookupOptions = {}): LockboxRuntimeSecretConfig | undefined {
-  const compact = getRuntimeEnvValue("PROOF_LOCKBOX_BOOTSTRAP", options);
+  // BKLG-20260829-m8kd step 1: prefer LISKOV_LOCKBOX_BOOTSTRAP, fall back to the
+  // legacy PROOF_LOCKBOX_BOOTSTRAP name the platform still emits.
+  const compact = getFirstRuntimeEnvValue(LOCKBOX_BOOTSTRAP_ENV_NAMES, options);
   if (compact !== undefined) return lockboxRuntimeConfigFromBootstrap(compact, options);
   const lockboxUrl = getRuntimeEnvValue("PROOF_LOCKBOX_URL", options);
   if (!lockboxUrl) return undefined;
@@ -235,7 +239,7 @@ export function lockboxRuntimeConfigFromBootstrap(
   rawBootstrap: string,
   options: RuntimeEnvLookupOptions = {}
 ): LockboxRuntimeSecretConfig {
-  const record = asRecord(parseJson(rawBootstrap, "PROOF_LOCKBOX_BOOTSTRAP"), "PROOF_LOCKBOX_BOOTSTRAP");
+  const record = asRecord(parseJson(rawBootstrap, LOCKBOX_BOOTSTRAP_ENV), LOCKBOX_BOOTSTRAP_ENV);
   const secretIds = record.s ?? record.secretIds ?? record.requestedSecretIds;
   return {
     lockboxUrl: requiredStringAlias(record, "u", "url", "lockboxUrl"),
@@ -246,7 +250,7 @@ export function lockboxRuntimeConfigFromBootstrap(
     grantId: requiredStringAlias(record, "g", "grantId"),
     policyDigest: normalizePolicyDigest(requiredStringAlias(record, "p", "policyDigest")),
     deploymentId: requiredStringAlias(record, "d", "deploymentId"),
-    requestedSecretIds: parseStringArrayOrCsv(secretIds, "PROOF_LOCKBOX_BOOTSTRAP.s"),
+    requestedSecretIds: parseStringArrayOrCsv(secretIds, `${LOCKBOX_BOOTSTRAP_ENV}.s`),
     allowInsecureHttp: Boolean(optionalBooleanEnv("PROOF_LOCKBOX_ALLOW_INSECURE_HTTP", options) ?? record.allowInsecureHttp),
     fileBaseDir: typeof record.f === "string" ? record.f : typeof record.fileBaseDir === "string" ? record.fileBaseDir : undefined,
     requestTtlMs: optionalIntegerEnv("PROOF_LOCKBOX_REQUEST_TTL_MS", options),

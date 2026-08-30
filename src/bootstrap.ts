@@ -39,7 +39,17 @@ export const LISKOV_RUNTIME_BOOTSTRAP_REQUEST_DOMAIN = LISKOV_RUNTIME_BOOTSTRAP_
 export const LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN = LISKOV_SECRET_BOOTSTRAP_REQUEST_DOMAIN_V1;
 export const LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN = LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V1;
 export const LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN = LISKOV_SECRET_BOOTSTRAP_RESPONSE_DOMAIN_V1;
-export const DEFAULT_LISKOV_CORE_URL = "https://liskov.proof.computer";
+/**
+ * The fleet's control-plane endpoint.
+ *
+ * `runtime.liskov.proof.computer` is a fleet-only name for the same
+ * `liskov-api` application the console's `api.` name resolves to
+ * (`BKLG-20260829-t4rp`). It is deliberately not the operator console
+ * hostname: a deployed job is the least reachable client there is, and
+ * console protection rules, maintenance and edge changes must not be able to
+ * wedge it.
+ */
+export const DEFAULT_LISKOV_CORE_URL = "https://runtime.liskov.proof.computer";
 export const DEFAULT_LISKOV_SECRETS_URL = "https://secrets.liskov.proof.computer";
 export const DEFAULT_LISKOV_BOOTSTRAP_REQUEST_TTL_MS = 60_000;
 export const DEFAULT_LISKOV_BOOTSTRAP_RETRY_INITIAL_DELAY_MS = 250;
