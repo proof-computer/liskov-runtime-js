@@ -47,6 +47,10 @@
       "types": "./dist/env.d.ts",
       "import": "./dist/env.js"
     },
+    "./env-names": {
+      "types": "./dist/env-names.d.ts",
+      "import": "./dist/env-names.js"
+    },
     "./home": {
       "types": "./dist/home.d.ts",
       "import": "./dist/home.js"

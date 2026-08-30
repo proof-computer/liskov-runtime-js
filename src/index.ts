@@ -30,6 +30,7 @@ import {
   type LiskovRuntimeDiagnostics,
   type SlipwayRuntimeHealthHandle
 } from "./diagnostics.js";
+import { LISKOV_BOOTSTRAP_ENV_NAMES, LOCKBOX_BOOTSTRAP_ENV_NAMES } from "./env-names.js";
 import { getFirstRuntimeEnvValue, resolveRuntimeStd, type AcurastRuntimeStd } from "./env.js";
 import { resolveSlipwayHome } from "./home.js";
 import {
@@ -52,6 +53,7 @@ export * from "./acurast.js";
 export * from "./blackbox-logger.js";
 export * from "./bootstrap.js";
 export * from "./diagnostics.js";
+export * from "./env-names.js";
 export * from "./env.js";
 export * from "./home.js";
 export * from "./lockbox.js";
@@ -1455,8 +1457,8 @@ function runtimeBootstrapAttrs(
     hasSlipwayBootstrap: Boolean(slipwayConfig),
     hasSlipwayDiagnosticsToken: Boolean(slipwayConfig?.diagnosticsToken),
     hasLockboxBootstrap: Boolean(lockboxConfig),
-    slipwayBootstrapSource: runtimeEnvSource("PROOF_SLIPWAY_BOOTSTRAP", lookup),
-    lockboxBootstrapSource: runtimeEnvSource("PROOF_LOCKBOX_BOOTSTRAP", lookup),
+    slipwayBootstrapSource: runtimeEnvSource(LISKOV_BOOTSTRAP_ENV_NAMES, lookup),
+    lockboxBootstrapSource: runtimeEnvSource(LOCKBOX_BOOTSTRAP_ENV_NAMES, lookup),
     slipwayHost: urlHostOrNull(slipwayConfig?.slipwayUrl),
     lockboxHost: urlHostOrNull(lockboxConfig?.lockboxUrl),
     applicationUid: slipwayConfig?.applicationUid ?? lockboxConfig?.applicationUid ?? null,
@@ -1478,13 +1480,19 @@ function compactDiagnosticAttrs(
   return Object.keys(attrs).length > 0 ? attrs : undefined;
 }
 
+/**
+ * Which channel supplied a value, checked in the same name order the readers
+ * use so the reported source never disagrees with the value actually read.
+ */
 function runtimeEnvSource(
-  name: string,
+  names: readonly string[],
   lookup: { env: Record<string, string | undefined>; std?: AcurastRuntimeStd; environment?: (name: string) => unknown }
 ): "process" | "std" | "environment" | "none" {
-  if (lookup.env[name]) return "process";
-  if (lookup.std?.env?.[name]) return "std";
-  if (lookup.environment?.(name) !== undefined) return "environment";
+  for (const name of names) {
+    if (lookup.env[name]) return "process";
+    if (lookup.std?.env?.[name]) return "std";
+    if (lookup.environment?.(name) !== undefined) return "environment";
+  }
   return "none";
 }
 

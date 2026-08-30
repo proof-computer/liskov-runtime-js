@@ -224,7 +224,8 @@ absent.
 ## Liskov Runtime Env
 
 Liskov jobs receive compact public bootstrap config through
-`PROOF_SLIPWAY_BOOTSTRAP`:
+`LISKOV_BOOTSTRAP`, falling back to the legacy `PROOF_SLIPWAY_BOOTSTRAP` name
+the platform still emits:
 
 ```json
 {
@@ -250,8 +251,8 @@ When the bootstrap is present, the runtime signs a
 policy digest, deployment id, job id, and processor id. Returned values are
 installed into runtime env before Lockbox secrets are requested.
 
-`refreshNow()` forces an immediate runtime-env refresh when
-`PROOF_SLIPWAY_BOOTSTRAP` exists, then performs one deduped secrets attempt if
+`refreshNow()` forces an immediate runtime-env refresh when the bootstrap
+config exists, then performs one deduped secrets attempt if
 background secrets are still pending, then refreshes logging. The current v0
 periodic runtime-env refresh is internal; Applications should use
 `refreshNow()` when they need an explicit reload.
@@ -259,7 +260,8 @@ periodic runtime-env refresh is internal; Applications should use
 ## Secrets
 
 Lockbox secrets are a built-in Liskov runtime capability. Jobs receive compact
-secret bootstrap config through `PROOF_LOCKBOX_BOOTSTRAP`:
+secret bootstrap config through `LISKOV_LOCKBOX_BOOTSTRAP`, falling back to the
+legacy `PROOF_LOCKBOX_BOOTSTRAP` name:
 
 ```json
 {
@@ -483,7 +485,8 @@ Capability states are `off`, `pending`, `ready`, `degraded`, `failed`, or
 
 Current v0 behavior:
 
-- `runtimeEnv` is required when `PROOF_SLIPWAY_BOOTSTRAP` is present.
+- `runtimeEnv` is required when the bootstrap config is present under either
+  name.
 - `secrets` is required only in required mode.
 - `logging` is required only in required mode.
 - `diagnostics` is non-fatal and reports ready once the local emitter exists.
