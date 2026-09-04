@@ -589,3 +589,28 @@ pnpm test
 pnpm build
 pnpm pack:dry-run
 ```
+
+## Encrypted application loader (8ho7 release candidate)
+
+The `./encrypted-code` export verifies an AES-256-GCM payload before loading a
+self-contained CommonJS module that exports `async start(runtime)`. The caller
+first completes `bootstrapSlipwayRuntime` and passes that same handle; the
+payload must not bootstrap a second runtime. `startEncryptedApplication`
+requires a matching, installed, UID/deployment-bound Lockbox secret named by the
+public descriptor, delivered to `LISKOV_CODE_KEY`. An ordinary environment value
+alone is refused. Keys use canonical standard base64 encoding of 32 random bytes.
+
+The non-secret descriptor and encrypted payload belong in the immutable public
+bootstrap ZIP. The ZIP's attested digest is the authority for both. Ciphertext
+and plaintext SHA-256 digests, a 12-byte IV, a 16-byte authentication tag, and
+AAD binding the protocol domain, secret id and plaintext digest are verified
+before execution. Source is written exclusively in a fresh private directory,
+loaded as a local module, and removed after `start` returns or fails. No shared
+plaintext cache or network code URL is accepted. Do not put secrets or plaintext
+application code in the public bootstrap or ZIP extras.
+
+This is a loader primitive, not evidence that the complete reusable-action and
+production key-release path is supported. That release remains gated by 8ho7's
+end-to-end canary. The existing managed Lockbox trust boundary still applies:
+PROOF can access the code key during managed release. This is not a claim of
+operator-blind execution or a Cargo private-image capability.

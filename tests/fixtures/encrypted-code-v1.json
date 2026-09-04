@@ -1,0 +1,15 @@
+{
+  "description": "Public test key only. AESGCM vector produced independently with Python cryptography.",
+  "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "plaintext": "module.exports.start = async (runtime) => { await runtime.log(\"encrypted-canary\", { marker: \"8ho7\" }); };\n",
+  "ciphertext": "Km2ybqmA7H71Mfj5xZpWHve39UDQRn8dSx6L5j1BcsdvZMeRyugypUqEBM3p8ElRmnkS+DSiyrdauUZ2f8vXi55ftAOjpUMFMTfLAI79d8oUqrJCGwIhA5iPpOxayNHi/Np5m4166GelFg==",
+  "descriptor": {
+    "domain": "proof.liskov.encrypted-code.v1",
+    "algorithm": "aes-256-gcm",
+    "keySecretId": "application-code-key",
+    "iv": "AAECAwQFBgcICQoL",
+    "authTag": "4wmfwDQCym7y6ilYrlvV4w==",
+    "plaintextDigest": "sha256:8d9b36ac3887608f0551340d29cdc42b9bcd07c9b170883a852f3f6d0e6af558",
+    "ciphertextDigest": "sha256:5e89d1aacb9cac0c20b172788188e07fbd4fd754b208968b7f60bbc573a62e3a"
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "@proof-computer/liskov-runtime",
-  "version": "0.3.28",
+  "version": "0.3.29",
   "private": false,
   "description": "Job-side Liskov runtime bootstrap SDK for PROOF Applications on Acurast.",
   "type": "module",
@@ -70,6 +70,10 @@
     "./runtime-env": {
       "types": "./dist/runtime-env.d.ts",
       "import": "./dist/runtime-env.js"
+    },
+    "./encrypted-code": {
+      "types": "./dist/encrypted-code.d.ts",
+      "import": "./dist/encrypted-code.js"
     }
   },
   "scripts": {
