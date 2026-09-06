@@ -643,3 +643,8 @@ installation. File contents preserve whitespace and newlines.
 Custom `RuntimeFileWriter` implementations must provide `installGroup(files)`
 with commit-or-rollback behavior for absolute destinations. Existing relative
 custom writers remain supported. Rebuild deployed artifacts to upgrade the SDK.
+
+SDK 0.3.32 also consumes the optional v2 `secrets.customerRequired` hint.
+Required customer groups block readiness; optional-only groups are discovered
+and loaded in background mode by default, and an absent optional grant does not
+block startup. An explicit caller secret mode still takes precedence.
