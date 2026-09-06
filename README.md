@@ -590,7 +590,7 @@ pnpm build
 pnpm pack:dry-run
 ```
 
-## Encrypted application loader (8ho7 release candidate)
+## Encrypted application loader
 
 The `./encrypted-code` export verifies an AES-256-GCM payload before loading a
 self-contained CommonJS module that exports `async start(runtime)`. The caller
@@ -622,8 +622,12 @@ Failures emit a bounded `application.encrypted_code.refused.<phase>` diagnostic
 before the stable `encrypted_code_start_failed` fatal event. Exception text,
 private source and key material are never included in those diagnostics.
 
-This is a loader primitive, not evidence that the complete reusable-action and
-production key-release path is supported. That release remains gated by 8ho7's
-end-to-end canary. The existing managed Lockbox trust boundary still applies:
+Runtime `0.3.30` and Actions `v1.3.2` completed the production encrypted path
+on 6 September 2026: job `160393` verified its managed grant, loaded the payload,
+and emitted signed application completion. Actions supplies a runtime home
+inside the processor job directory, where filesystem access is permitted.
+The [capability matrix](https://docs.proof.computer/liskov/reference/capabilities)
+retains the separate registered V5 public-release boundary.
+The existing managed Lockbox trust boundary still applies:
 PROOF can access the code key during managed release. This is not a claim of
 operator-blind execution or a Cargo private-image capability.
