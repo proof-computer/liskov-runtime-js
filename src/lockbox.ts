@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { installSecretFiles, type SecretFile } from "./secret-files.js";
 import path from "node:path";
 
 import type { RuntimeIdentityProvider } from "./acurast.js";
@@ -186,6 +186,8 @@ export interface LockboxRuntimeLoadOptions {
 }
 
 export interface RuntimeFileWriter {
+  /** Required for absolute V5 destinations; commits or rolls back the entire group. */
+  installGroup?(files: readonly SecretFile[]): Promise<void>;
   mkdir(path: string, options: { recursive: true }): Promise<unknown>;
   writeFile(path: string, data: string, options: { encoding: "utf8"; mode: number }): Promise<unknown>;
   chmod(path: string, mode: number): Promise<unknown>;
@@ -449,27 +451,43 @@ export async function installLockboxRuntimeSecrets(input: {
   files?: RuntimeFileWriter;
 }): Promise<LockboxRuntimeInstallResult> {
   const env = input.env ?? process.env;
-  const files = input.files ?? { mkdir, writeFile, chmod };
+  const pendingEnv: Array<{ name: string; value: string }> = [];
+  const pendingFiles: SecretFile[] = [];
   const installed: LockboxRuntimeInstallResult = { env: [], files: [], skippedExistingEnv: [] };
   for (const secret of input.payload.secrets) {
     const record = installedSecret(secret);
     if (secret.target === "env") {
       const name = validEnvName(secret.name);
+      if (secret.value.includes("\0")) throw new Error("environment secret contains a NUL byte");
       if (env[name] !== undefined && input.overwriteEnv !== true) {
         installed.skippedExistingEnv.push(record);
         continue;
       }
-      env[name] = secret.value;
+      pendingEnv.push({ name, value: secret.value });
       installed.env.push(record);
       continue;
     }
-    if (!input.fileBaseDir) throw new Error("file-target Lockbox secrets require fileBaseDir");
     const targetPath = safeSecretFilePath(input.fileBaseDir, secret.name);
-    await files.mkdir(path.dirname(targetPath), { recursive: true });
-    await files.writeFile(targetPath, secret.value, { encoding: "utf8", mode: 0o600 });
-    await files.chmod(targetPath, 0o600);
+    if (path.isAbsolute(secret.name) && input.files && !input.files.installGroup) {
+      throw new Error("absolute file secrets require an atomic installGroup writer");
+    }
+    pendingFiles.push({ path: targetPath, value: secret.value });
     installed.files.push(record);
   }
+  if (pendingFiles.length > 0) {
+    if (!input.files) await installSecretFiles(pendingFiles);
+    else if (input.files.installGroup) await input.files.installGroup(pendingFiles);
+    else {
+      // Preserve the existing relative-path custom writer API. Validate the
+      // complete group above and apply environment values only after all writes.
+      for (const file of pendingFiles) {
+        await input.files.mkdir(path.dirname(file.path), { recursive: true });
+        await input.files.writeFile(file.path, file.value, { encoding: "utf8", mode: 0o600 });
+        await input.files.chmod(file.path, 0o600);
+      }
+    }
+  }
+  for (const entry of pendingEnv) env[entry.name] = entry.value;
   return installed;
 }
 
@@ -661,7 +679,17 @@ function assertLockboxPayloadBinding(input: {
     if (actual !== wanted) throw new Error(`Lockbox plaintext payload ${label} did not match the signed request`);
   }
   const requested = new Set(request.requestedSecretIds);
+  const metadata = new Map(input.response.secretVersions.map(secret => [secret.secretId, secret]));
+  const ids = new Set(input.payload.secrets.map(secret => secret.secretId));
+  if (metadata.size !== input.response.secretVersions.length || ids.size !== input.payload.secrets.length
+      || ids.size !== metadata.size || (request.domain === LOCKBOX_RUNTIME_JOB_SECRET_REQUEST_DOMAIN_V2
+        && ids.size !== requested.size)) throw new Error("Lockbox secret group is incomplete or duplicated");
   for (const secret of input.payload.secrets) {
+    const expected = metadata.get(secret.secretId);
+    if (!expected || expected.versionId !== secret.versionId || expected.target !== secret.target
+        || expected.name !== secret.name || expected.required !== secret.required || expected.bundleId !== secret.bundleId) {
+      throw new Error("Lockbox secret destination did not match its encrypted payload");
+    }
     if (!requested.has(secret.secretId)) {
       throw new Error("Lockbox plaintext payload included a secret that was not requested");
     }
@@ -736,8 +764,12 @@ function parseJsonOrUndefined(raw: string): unknown {
   }
 }
 
-function safeSecretFilePath(baseDir: string, name: string): string {
+function safeSecretFilePath(baseDir: string | undefined, name: string): string {
   const cleanName = validSecretFileName(name);
+  if (cleanName.split(/[\\/]/u).includes("..")) throw new Error("file secret path escapes the configured base directory");
+  if (cleanName.endsWith("/")) throw new Error("file secret name is invalid");
+  if (path.isAbsolute(cleanName)) return cleanName;
+  if (!baseDir) throw new Error("relative file-target Lockbox secrets require fileBaseDir");
   const base = path.resolve(baseDir);
   const target = path.resolve(base, cleanName);
   const relative = path.relative(base, target);

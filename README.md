@@ -631,3 +631,15 @@ retains the separate registered V5 public-release boundary.
 The existing managed Lockbox trust boundary still applies:
 PROOF can access the code key during managed release. This is not a claim of
 operator-blind execution or a Cargo private-image capability.
+
+### V5 file-secret installation
+
+Version 0.3.31 supports authenticated absolute file destinations as well as
+legacy relative names below `fileBaseDir`. The default Node installer stages the
+file group, uses private 0600 files, rejects symlinks and traversal, and recovers
+interrupted replacements. It applies environment values after successful file
+installation. File contents preserve whitespace and newlines.
+
+Custom `RuntimeFileWriter` implementations must provide `installGroup(files)`
+with commit-or-rollback behavior for absolute destinations. Existing relative
+custom writers remain supported. Rebuild deployed artifacts to upgrade the SDK.
