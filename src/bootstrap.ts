@@ -125,6 +125,7 @@ export interface LiskovRuntimeBootstrapResponse {
     url?: string;
   };
   secrets?: {
+    customerRequired?: boolean;
     required?: boolean;
     url?: string;
   };
@@ -150,6 +151,7 @@ export interface LiskovRuntimeBootstrapLoadResult {
   response: LiskovRuntimeBootstrapResponse;
   runtimeEnvConfig?: SlipwayRuntimeEnvConfig;
   secretsRequired: boolean;
+  customerSecretsRequired?: boolean;
   secretsUrl: string;
 }
 
@@ -346,7 +348,8 @@ export async function loadLiskovRuntimeBootstrap(
     request,
     response,
     runtimeEnvConfig,
-    secretsRequired: response.secrets?.required === true,
+    secretsRequired: response.secrets?.customerRequired ?? (response.secrets?.required === true),
+    ...(response.secrets?.customerRequired === undefined ? {} : { customerSecretsRequired: response.secrets.customerRequired }),
     secretsUrl: response.secrets?.url ?? urls.secretsUrl
   };
 }
@@ -428,6 +431,7 @@ export function parseLiskovRuntimeBootstrapResponse(value: unknown): LiskovRunti
     secrets: secrets === undefined
       ? undefined
       : {
+          ...(optionalBoolean(secrets, "customerRequired") === undefined ? {} : { customerRequired: optionalBoolean(secrets, "customerRequired") }),
           required: optionalBoolean(secrets, "required"),
           url: optionalString(secrets, "url")
         }

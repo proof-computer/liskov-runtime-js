@@ -212,6 +212,7 @@ async function resolveSignedRuntimeBootstrap(input: {
   setTimeoutImpl?: typeof setTimeout;
   bootstrap?: BootstrapSlipwayRuntimeOptions["bootstrap"];
   requestedSecretsMode?: SlipwayRuntimeSecretMode;
+  setDefaultSecretsMode(mode: SlipwayRuntimeSecretMode): void;
   hasLockboxConfig: boolean;
   setSlipwayConfig(config: NonNullable<ReturnType<typeof readSlipwayRuntimeEnvConfig>>): void;
   setLockboxConfig(config: NonNullable<ReturnType<typeof readLockboxRuntimeConfig>>): void;
@@ -237,12 +238,16 @@ async function resolveSignedRuntimeBootstrap(input: {
   input.setFailureStage("runtime_bootstrap");
   const runtimeBootstrap = await loadSignedRuntimeBootstrapOrSkip(input.mode, signedOptions);
   if (!runtimeBootstrap) return;
+  if (runtimeBootstrap.customerSecretsRequired !== undefined) {
+    input.setDefaultSecretsMode(runtimeBootstrap.customerSecretsRequired ? "required" : "background");
+  }
   if (runtimeBootstrap.runtimeEnvConfig !== undefined) {
     input.setSlipwayConfig(runtimeBootstrap.runtimeEnvConfig);
   }
   if (input.hasLockboxConfig && input.mode !== "signed") return;
   if (input.requestedSecretsMode === "off") return;
   const shouldDiscoverSecrets =
+    runtimeBootstrap.customerSecretsRequired !== undefined ||
     runtimeBootstrap.secretsRequired ||
     input.requestedSecretsMode === "required" ||
     input.requestedSecretsMode === "background";
@@ -329,6 +334,7 @@ export async function bootstrapSlipwayRuntime(
     );
   const fatalCleanup: Array<() => void> = [];
   let failureStage: BootstrapFailureStage = "runtime_bootstrap";
+  let defaultSecretsMode: SlipwayRuntimeSecretMode | undefined;
   const diagnostics = createSlipwayRuntimeDiagnosticEmitter({
     bootstrap: slipwayConfig,
     coreUrl: shouldResolveSignedBootstrap ? signedUrls.coreUrl : undefined,
@@ -366,6 +372,7 @@ export async function bootstrapSlipwayRuntime(
       setTimeoutImpl: options.setTimeoutImpl,
       bootstrap: options.bootstrap,
       requestedSecretsMode: options.secrets?.mode,
+      setDefaultSecretsMode: (mode) => { defaultSecretsMode = mode; },
       hasLockboxConfig: lockboxConfig !== undefined,
       setSlipwayConfig: (config) => {
         slipwayConfig = config;
@@ -380,7 +387,7 @@ export async function bootstrapSlipwayRuntime(
   }
   diagnostics.configureBootstrap(slipwayConfig);
   failureStage = "runtime_env";
-  const secretsMode = options.secrets?.mode ?? (lockboxConfig === undefined ? "off" : "required");
+  const secretsMode = options.secrets?.mode ?? defaultSecretsMode ?? (lockboxConfig === undefined ? "off" : "required");
   const loggingMode = options.logging?.mode ?? "background";
   await allowBootstrapHostnames(std, [
     urlHostOrNull(slipwayConfig?.slipwayUrl),

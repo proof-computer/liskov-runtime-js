@@ -666,7 +666,7 @@ describe("top-level Slipway runtime bootstrap", () => {
     }
   });
 
-  it("tolerates a permanently absent grant when secrets are optional (background mode)", async () => {
+  for (const automatic of [false, true]) it(`tolerates an absent optional grant (automatic=${automatic})`, async () => {
     // Prod 2026-07-06: an app without a lockbox grant 404'd secret-bootstrap
     // (job_grant_not_found) and the whole job died even though core had said
     // secrets.required=false. Optional discovery must resolve without lockbox.
@@ -679,7 +679,7 @@ describe("top-level Slipway runtime bootstrap", () => {
         secretsUrl: "https://secrets.liskov.test",
         retry: { initialDelayMs: 1, intervalMs: 1, maxElapsedMs: 50, maxAttempts: 2 }
       },
-      secrets: { mode: "background" },
+      ...(automatic ? {} : { secrets: { mode: "background" as const } }),
       identityProvider: fakeIdentityProvider(),
       nowMs: () => 1_000,
       setTimeoutImpl: (((callback: () => void) => {
@@ -692,7 +692,7 @@ describe("top-level Slipway runtime bootstrap", () => {
         if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
           return jsonResponse({
             ...liskovRuntimeBootstrapResponse(),
-            secrets: { required: false, url: "https://secrets.liskov.test" }
+            secrets: { required: automatic, ...(automatic ? { customerRequired: false } : {}), url: "https://secrets.liskov.test" }
           });
         }
         if (parsed.pathname === "/api/jobs/secret-bootstrap") {
