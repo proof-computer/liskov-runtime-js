@@ -1,5 +1,6 @@
 import { createDecipheriv, createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -8,6 +9,10 @@ import type { BootstrapSlipwayRuntimeHandle } from "./index.js";
 export const ENCRYPTED_CODE_DOMAIN = "proof.liskov.encrypted-code.v1";
 export const ENCRYPTED_CODE_KEY_ENV = "LISKOV_CODE_KEY";
 export const MAX_ENCRYPTED_CODE_BYTES = 16 * 1024 * 1024;
+
+type LoadPhase = "descriptor" | "readiness" | "key_release" | "ciphertext"
+  | "verification" | "directory" | "module_write" | "module_load"
+  | "entrypoint" | "verified_event" | "application_start";
 
 /** Public metadata inside the immutable, OIDC-attested bootstrap ZIP. */
 export interface EncryptedCodeDescriptor {
@@ -83,10 +88,15 @@ export async function startEncryptedApplication(input: {
 }): Promise<void> {
   const { runtime } = input;
   let directory: string | undefined;
+  let filename: string | undefined;
+  let loadModule: ReturnType<typeof createRequire> | undefined;
   let plaintext: Buffer | undefined;
+  let phase: LoadPhase = "descriptor";
   try {
     const descriptor = parseEncryptedCodeDescriptor(input.descriptor);
+    phase = "readiness";
     await runtime.whenReady();
+    phase = "key_release";
     const release = runtime.lockbox;
     const status = runtime.status();
     const delivered = release?.installed.env.filter((secret) =>
@@ -100,30 +110,50 @@ export async function startEncryptedApplication(input: {
         && secret.name === ENCRYPTED_CODE_KEY_ENV)) {
       throw new Error("encrypted_code_key_release_required");
     }
+    phase = "ciphertext";
     const ciphertext = await readFile(input.ciphertextPath);
+    phase = "verification";
     plaintext = decryptEncryptedCode(ciphertext, runtime.env.require(ENCRYPTED_CODE_KEY_ENV), descriptor);
     // A fresh 0700 directory and exclusive 0600 write prevent cache reuse and
     // path/symlink substitution across boots. Only authenticated bytes reach it.
+    phase = "directory";
+    await mkdir(runtime.home, { recursive: true, mode: 0o700 });
     directory = await mkdtemp(path.join(runtime.home, "encrypted-code-"));
-    const filename = path.join(directory, "application.cjs");
+    filename = path.resolve(directory, "application.cjs");
+    phase = "module_write";
     await writeFile(filename, plaintext, { mode: 0o600, flag: "wx" });
     plaintext.fill(0);
     plaintext = undefined;
-    const module = await import(pathToFileURL(filename).href);
+    // The payload contract is CommonJS. Use its loader directly: embedded
+    // Node contexts need not install a host callback for dynamic import().
+    phase = "module_load";
+    loadModule = createRequire(pathToFileURL(filename));
+    const module = loadModule(filename);
+    phase = "entrypoint";
     const start = module.start ?? module.default?.start;
     if (typeof start !== "function") throw new Error("encrypted_code_start_missing");
+    phase = "verified_event";
     await runtime.diagnostics.report({
       stage: "application.encrypted_code.loaded", status: "succeeded",
       code: "encrypted_code_verified", attrs: { plaintextDigest: descriptor.plaintextDigest,
         ciphertextDigest: descriptor.ciphertextDigest }
     });
+    phase = "application_start";
     await start(runtime);
   } catch {
+    // A bounded phase is useful evidence without inspecting an exception that
+    // may contain private source, keys, paths or application-controlled text.
+    // The separate detail event keeps the existing fatal code/metric stable.
+    await runtime.diagnostics.report({
+      stage: `application.encrypted_code.refused.${phase}`, status: "failed",
+      code: "encrypted_code_failure_detail", attrs: { phase }
+    });
     await runtime.diagnostics.fatal({ kind: "application_start", code: "encrypted_code_start_failed",
-      message: "Encrypted application could not be verified and started" });
+      message: `Encrypted application could not be verified and started (${phase})`, attrs: { phase } });
     throw new Error("encrypted_code_start_failed");
   } finally {
     plaintext?.fill(0);
+    if (filename !== undefined && loadModule !== undefined) delete loadModule.cache[filename];
     if (directory !== undefined) await rm(directory, { recursive: true, force: true });
   }
 }

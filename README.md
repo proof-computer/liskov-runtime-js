@@ -612,9 +612,15 @@ bootstrap ZIP. The ZIP's attested digest is the authority for both. Ciphertext
 and plaintext SHA-256 digests, a 12-byte IV, a 16-byte authentication tag, and
 AAD binding the protocol domain, secret id and plaintext digest are verified
 before execution. Source is written exclusively in a fresh private directory,
-loaded as a local module, and removed after `start` returns or fails. No shared
+loaded through the CommonJS loader, and removed after `start` returns or fails.
+The runtime home is created privately when absent, and the loaded module is
+removed from the CommonJS cache during cleanup. No shared
 plaintext cache or network code URL is accepted. Do not put secrets or plaintext
 application code in the public bootstrap or ZIP extras.
+
+Failures emit a bounded `application.encrypted_code.refused.<phase>` diagnostic
+before the stable `encrypted_code_start_failed` fatal event. Exception text,
+private source and key material are never included in those diagnostics.
 
 This is a loader primitive, not evidence that the complete reusable-action and
 production key-release path is supported. That release remains gated by 8ho7's
