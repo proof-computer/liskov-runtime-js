@@ -600,14 +600,27 @@ requires a matching, installed, UID/deployment-bound Lockbox secret named by the
 public descriptor, delivered to `LISKOV_CODE_KEY`. An ordinary environment value
 alone is refused. Keys use canonical standard base64 encoding of 32 random bytes.
 
+The processor also needs a working P-256 response key for its Lockbox grant.
+The Android implementation requires Android 12 or later; a `DataEncryption`
+advertisement alone does not establish P-256 support. `lockbox_response_key_missing`
+identifies this processor key, while `LISKOV_CODE_KEY` is the separate application
+AES key. Follow the [encrypted JavaScript guide](https://docs.proof.computer/liskov/build/encrypted-javascript)
+for processor selection, paused setup and runtime verification.
+
 The non-secret descriptor and encrypted payload belong in the immutable public
 bootstrap ZIP. The ZIP's attested digest is the authority for both. Ciphertext
 and plaintext SHA-256 digests, a 12-byte IV, a 16-byte authentication tag, and
 AAD binding the protocol domain, secret id and plaintext digest are verified
 before execution. Source is written exclusively in a fresh private directory,
-loaded as a local module, and removed after `start` returns or fails. No shared
+loaded through the CommonJS loader, and removed after `start` returns or fails.
+The runtime home is created privately when absent, and the loaded module is
+removed from the CommonJS cache during cleanup. No shared
 plaintext cache or network code URL is accepted. Do not put secrets or plaintext
 application code in the public bootstrap or ZIP extras.
+
+Failures emit a bounded `application.encrypted_code.refused.<phase>` diagnostic
+before the stable `encrypted_code_start_failed` fatal event. Exception text,
+private source and key material are never included in those diagnostics.
 
 This is a loader primitive, not evidence that the complete reusable-action and
 production key-release path is supported. That release remains gated by 8ho7's
