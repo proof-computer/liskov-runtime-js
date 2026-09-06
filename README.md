@@ -600,6 +600,13 @@ requires a matching, installed, UID/deployment-bound Lockbox secret named by the
 public descriptor, delivered to `LISKOV_CODE_KEY`. An ordinary environment value
 alone is refused. Keys use canonical standard base64 encoding of 32 random bytes.
 
+The processor also needs a working P-256 response key for its Lockbox grant.
+The Android implementation requires Android 12 or later; a `DataEncryption`
+advertisement alone does not establish P-256 support. `lockbox_response_key_missing`
+identifies this processor key, while `LISKOV_CODE_KEY` is the separate application
+AES key. Follow the [encrypted JavaScript guide](https://docs.proof.computer/liskov/build/encrypted-javascript)
+for processor selection, paused setup and runtime verification.
+
 The non-secret descriptor and encrypted payload belong in the immutable public
 bootstrap ZIP. The ZIP's attested digest is the authority for both. Ciphertext
 and plaintext SHA-256 digests, a 12-byte IV, a 16-byte authentication tag, and
