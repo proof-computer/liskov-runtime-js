@@ -215,6 +215,7 @@ async function resolveSignedRuntimeBootstrap(input: {
   setDefaultSecretsMode(mode: SlipwayRuntimeSecretMode): void;
   hasLockboxConfig: boolean;
   setSlipwayConfig(config: NonNullable<ReturnType<typeof readSlipwayRuntimeEnvConfig>>): void;
+  setRuntimeEnvEnabled(enabled: boolean): void;
   setLockboxConfig(config: NonNullable<ReturnType<typeof readLockboxRuntimeConfig>>): void;
   setFailureStage(stage: BootstrapFailureStage): void;
 }): Promise<void> {
@@ -244,6 +245,7 @@ async function resolveSignedRuntimeBootstrap(input: {
   if (runtimeBootstrap.runtimeEnvConfig !== undefined) {
     input.setSlipwayConfig(runtimeBootstrap.runtimeEnvConfig);
   }
+  input.setRuntimeEnvEnabled(runtimeBootstrap.runtimeEnvEnabled);
   if (input.hasLockboxConfig && input.mode !== "signed") return;
   if (input.requestedSecretsMode === "off") return;
   const shouldDiscoverSecrets =
@@ -317,6 +319,11 @@ export async function bootstrapSlipwayRuntime(
   const identityLookup = signedBootstrapMode === "off" ? lookup : { env, std };
   const identityProvider = options.identityProvider ?? createAcurastRuntimeAdapter(identityLookup);
   let slipwayConfig = readSlipwayRuntimeEnvConfig(legacyBootstrapLookup);
+  // A legacy env-delivered config always carries an environment; the signed
+  // bootstrap says whether core delivers one. Signed check-ins never depend
+  // on it (BKLG-20260907-vq4x: V5 jobs without slipway-delivered environment
+  // sent no health beat at all, so core read every one as contact lost).
+  let runtimeEnvEnabled = slipwayConfig !== undefined;
   let lockboxConfig = readLockboxRuntimeConfig(legacyBootstrapLookup);
   const startedAtMs = options.nowMs?.() ?? Date.now();
   const signedUrls = liskovSignedBootstrapUrls({
@@ -376,6 +383,9 @@ export async function bootstrapSlipwayRuntime(
       hasLockboxConfig: lockboxConfig !== undefined,
       setSlipwayConfig: (config) => {
         slipwayConfig = config;
+      },
+      setRuntimeEnvEnabled: (enabled) => {
+        runtimeEnvEnabled = enabled;
       },
       setLockboxConfig: (config) => {
         lockboxConfig = config;
@@ -465,7 +475,7 @@ export async function bootstrapSlipwayRuntime(
   });
   fatalCleanup.push(() => secrets.stop());
 
-  if (slipwayConfig !== undefined) {
+  if (slipwayConfig !== undefined && runtimeEnvEnabled) {
     refreshHandle = startSlipwayRuntimeEnvRefresh({
       identityProvider,
       config: slipwayConfig,
@@ -549,7 +559,7 @@ export async function bootstrapSlipwayRuntime(
         startedAtMs,
         appId: options.appId,
         revision: options.revision,
-        slipwayConfig,
+        slipwayConfig: runtimeEnvEnabled ? slipwayConfig : undefined,
         lockboxConfig,
         runtimeEnv,
         secretsStatus: secrets.status(),
@@ -562,7 +572,7 @@ export async function bootstrapSlipwayRuntime(
         startedAtMs,
         appId: options.appId,
         revision: options.revision,
-        slipwayConfig,
+        slipwayConfig: runtimeEnvEnabled ? slipwayConfig : undefined,
         lockboxConfig,
         runtimeEnv,
         secretsStatus: secrets.status(),

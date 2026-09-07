@@ -292,6 +292,56 @@ describe("top-level Slipway runtime bootstrap", () => {
     }
   });
 
+  it("keeps the signed health loop when core delivers no runtime environment", async () => {
+    // BKLG-20260907-vq4x: a V5 job with no slipway-delivered environment got
+    // `runtimeEnv.enabled: false`, which used to drop the whole runtime config
+    // and with it the 30 s health loop — so core never heard from a healthy
+    // runtime after bootstrap and reported every one as contact lost.
+    const env: Record<string, string | undefined> = {};
+    const paths: string[] = [];
+    const diagnosticBodies: Record<string, unknown>[] = [];
+    const handle = await bootstrapSlipwayRuntime({
+      env,
+      bootstrap: { coreUrl: "https://liskov.test" },
+      secrets: { mode: "off" },
+      identityProvider: fakeIdentityProvider(),
+      nowMs: () => 1_000,
+      randomBytes: (size) => new Uint8Array(size).fill(7),
+      runtimeHealth: { intervalMs: 0 },
+      fetchImpl: (async (url, init) => {
+        const parsed = new URL(String(url));
+        const request = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        paths.push(parsed.pathname);
+        if (parsed.pathname === "/api/jobs/runtime-diagnostics") {
+          diagnosticBodies.push(request);
+          return jsonResponse({ ok: true });
+        }
+        if (parsed.pathname === "/api/jobs/runtime-bootstrap") {
+          return jsonResponse({
+            ...liskovRuntimeBootstrapResponse(),
+            runtimeEnv: { enabled: false, url: "https://slipway.test" },
+            secrets: { required: false, url: "https://secrets.liskov.test" }
+          });
+        }
+        throw new Error(`unexpected path ${parsed.pathname}`);
+      }) as typeof fetch
+    });
+    try {
+      assert.ok(!paths.includes("/api/jobs/runtime-env"), "no environment is requested");
+      assert.equal(handle.status().capabilities.runtimeEnv.state, "off");
+      assert.ok(handle.runtimeHealth, "the signed health loop exists without an environment");
+      await handle.runtimeHealth.sendNow();
+      const health = diagnosticBodies.find((body) => body.stage === "runtime.health");
+      assert.ok(health, "a signed runtime.health check-in was sent");
+      assert.equal(health.domain, "proof.liskov.runtime-diagnostic.v4");
+      assert.equal(health.runtimeInstanceId, "07".repeat(16));
+      assert.equal(health.applicationUid, APPLICATION_UID);
+      assert.equal(health.status, "info");
+    } finally {
+      handle.stop();
+    }
+  });
+
   it("passes cooperative cease through the supported bootstrap options", async () => {
     const diagnosticBodies: Record<string, unknown>[] = [];
     let ceaseCalls = 0;

@@ -149,7 +149,14 @@ export interface LiskovSecretBootstrapResponse {
 export interface LiskovRuntimeBootstrapLoadResult {
   request: LiskovRuntimeBootstrapSignedRequest;
   response: LiskovRuntimeBootstrapResponse;
+  /// The runtime's binding to core for signed check-ins and, when
+  /// `runtimeEnvEnabled`, the runtime-env refresh. Present whenever the
+  /// bootstrap bound a runtime instance; the health loop rides on it even for
+  /// a job that delivers no environment (BKLG-20260907-vq4x).
   runtimeEnvConfig?: SlipwayRuntimeEnvConfig;
+  /// Whether core delivers an environment to this job. `false` means the
+  /// runtime-env refresh must not run; check-ins still do.
+  runtimeEnvEnabled: boolean;
   secretsRequired: boolean;
   customerSecretsRequired?: boolean;
   secretsUrl: string;
@@ -332,22 +339,22 @@ export async function loadLiskovRuntimeBootstrap(
     return response;
   });
   assertRuntimeBootstrapBinding({ request, response });
-  const runtimeEnvConfig = response.runtimeEnv?.enabled === false
-    ? undefined
-    : {
-        slipwayUrl: response.runtimeEnv?.url ?? response.slipwayUrl,
-        ...(response.applicationUid === undefined ? {} : { applicationUid: response.applicationUid }),
-        applicationId: response.applicationId,
-        policyDigest: response.policyDigest,
-        deploymentId: response.deploymentId,
-        runtimeInstanceId: response.runtimeInstanceId,
-        allowInsecureHttp,
-        requestTtlMs
-      };
+  const runtimeEnvEnabled = response.runtimeEnv?.enabled !== false;
+  const runtimeEnvConfig: SlipwayRuntimeEnvConfig = {
+    slipwayUrl: response.runtimeEnv?.url ?? response.slipwayUrl,
+    ...(response.applicationUid === undefined ? {} : { applicationUid: response.applicationUid }),
+    applicationId: response.applicationId,
+    policyDigest: response.policyDigest,
+    deploymentId: response.deploymentId,
+    runtimeInstanceId: response.runtimeInstanceId,
+    allowInsecureHttp,
+    requestTtlMs
+  };
   return {
     request,
     response,
     runtimeEnvConfig,
+    runtimeEnvEnabled,
     secretsRequired: response.secrets?.customerRequired ?? (response.secrets?.required === true),
     ...(response.secrets?.customerRequired === undefined ? {} : { customerSecretsRequired: response.secrets.customerRequired }),
     secretsUrl: response.secrets?.url ?? urls.secretsUrl
