@@ -648,3 +648,9 @@ SDK 0.3.32 also consumes the optional v2 `secrets.customerRequired` hint.
 Required customer groups block readiness; optional-only groups are discovered
 and loaded in background mode by default, and an absent optional grant does not
 block startup. An explicit caller secret mode still takes precedence.
+
+SDK 0.3.33 keeps the signed `runtime.health` loop for a job whose bootstrap
+delivers no environment (`runtimeEnv.enabled: false`). Earlier versions
+dropped the whole runtime config in that case and never checked in after
+bootstrap, so core reported every such runtime as contact lost. The
+runtime-env refresh stays off for those jobs; only the check-ins run.
