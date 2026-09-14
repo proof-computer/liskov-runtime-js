@@ -44,6 +44,13 @@ export function normalizeNetworkSample(sample: NetworkSampleV1): NetworkSampleV1
     if (l.status === "succeeded") ensure(l.bytes === sizes[l.id] && l.error === null);
     if (l.status === "skipped_budget") ensure(l.bytes === 0 && l.durationUs === 0);
   }
+  const order = Object.keys(sizes);
+  sample.legs.forEach((l,i) => {
+    if (i) { const previous = sample.legs[i-1]!; ensure(order.indexOf(previous.id) < order.indexOf(l.id) && previous.startOffsetUs+previous.durationUs <= l.startOffsetUs); }
+    const precursor = l.id === "download10m" ? "download1m" : l.id === "upload10m" ? "upload1m" : l.id === "download100m" ? "download10m" : null;
+    if (precursor !== null) ensure(sample.legs.some(p => p.id === precursor && p.status === "succeeded" && p.durationUs > 0 && (l.id === "download100m" ? p.durationUs < 4_000_000 : Math.floor(p.bytes*8000/p.durationUs) >= 4000)));
+  });
+  ensure(!sample.legs.length || sample.legs[0]!.startOffsetUs >= sample.udp.startOffsetUs+sample.udp.durationUs);
   const u = sample.udp; exact(u,"status,startOffsetUs,durationUs,sentUs,echoes,error"); status(u.status); error(u.error); integer(u.startOffsetUs); integer(u.durationUs,3_000_000); ensure(u.startOffsetUs+u.durationUs <= sample.durationMs*1000);
   ensure(Array.isArray(u.sentUs) && u.sentUs.length <= 20); ensure(Array.isArray(u.echoes) && u.echoes.length <= u.sentUs.length);
   u.sentUs.forEach((t,i) => { integer(t,u.durationUs); if (i) ensure(t > u.sentUs[i-1]!); }); const sequences = new Set<number>();
