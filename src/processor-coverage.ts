@@ -1,3 +1,5 @@
+import { normalizeNetworkSample, type NetworkSampleV1 } from "./network-sample.js";
+export type { NetworkSampleV1, NetworkMetrics, NetworkReceipt } from "./network-sample.js";
 import { Buffer } from "node:buffer";
 
 import type { RuntimeIdentityProvider } from "./acurast.js";
@@ -22,7 +24,9 @@ export type LiskovProcessorCoverageOutcomeStatus =
   | "succeeded"
   | "failed"
   | "timed_out"
-  | "unsupported";
+  | "unsupported"
+  | "skipped_budget"
+  | "unreachable";
 
 export interface LiskovProcessorCoverageTarget {
   targetId: string;
@@ -65,6 +69,7 @@ export interface LiskovProcessorCoverageResultV1 {
   issuedAtMs: number;
   expiresAtMs: number;
   outcomes: LiskovProcessorCoverageOutcome[];
+  networkSample?: NetworkSampleV1;
   normalizedMetricDigest: string;
   challenge: string;
   replaySubject: string;
@@ -109,6 +114,7 @@ export function canonicalLiskovProcessorCoverageResultV1(
     issuedAtMs,
     expiresAtMs,
     outcomes: unsigned.outcomes.map(normalizeOutcome),
+    ...(unsigned.networkSample === undefined ? {} : { networkSample: normalizeNetworkSample(unsigned.networkSample) }),
     normalizedMetricDigest: normalizeSha256Digest(
       unsigned.normalizedMetricDigest,
       "normalizedMetricDigest"
@@ -159,7 +165,7 @@ function normalizeOutcome(outcome: LiskovProcessorCoverageOutcome): LiskovProces
     throw new Error("outcomes[] must be an object");
   }
   const record = outcome as unknown as Record<string, unknown>;
-  if (!["succeeded", "failed", "timed_out", "unsupported"].includes(outcome.status)) {
+  if (!["succeeded", "failed", "timed_out", "unsupported", "skipped_budget", "unreachable"].includes(outcome.status)) {
     throw new Error("outcomes[].status is unsupported");
   }
   const startedAtMs = integerTimestamp(outcome.startedAtMs, "outcomes[].startedAtMs");

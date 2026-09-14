@@ -63,3 +63,11 @@ describe("proof.liskov.processor-coverage-result.v1", () => {
     }), /at most 16/u);
   });
 });
+
+it("preserves and validates the shared signed network sample", () => {
+  const vector = JSON.parse(readFileSync(new URL("./vectors/processor-coverage-network-v1.json", import.meta.url), "utf8")) as { result: LiskovProcessorCoverageResultV1; canonicalSigningPayload: string };
+  assert.equal(Buffer.from(liskovProcessorCoverageResultV1Message(vector.result)).toString("utf8"), vector.canonicalSigningPayload);
+  const corrupt = structuredClone(vector.result);
+  corrupt.networkSample!.metrics.lossBps = 0;
+  assert.throws(() => canonicalLiskovProcessorCoverageResultV1(corrupt), /invalid network sample/u);
+});
