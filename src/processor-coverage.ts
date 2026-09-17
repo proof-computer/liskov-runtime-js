@@ -1,5 +1,7 @@
 import { normalizeNetworkSample, type NetworkSampleV1 } from "./network-sample.js";
+import { normalizeInboundReachability, type InboundReachabilityV1 } from "./inbound-reachability.js";
 export type { NetworkSampleV1, NetworkMetrics, NetworkReceipt } from "./network-sample.js";
+export type { InboundReachabilityV1, InboundFamilyVerdict, InboundFamily, InboundVerdict } from "./inbound-reachability.js";
 import { Buffer } from "node:buffer";
 
 import type { RuntimeIdentityProvider } from "./acurast.js";
@@ -70,6 +72,7 @@ export interface LiskovProcessorCoverageResultV1 {
   expiresAtMs: number;
   outcomes: LiskovProcessorCoverageOutcome[];
   networkSample?: NetworkSampleV1;
+  inboundReachability?: InboundReachabilityV1;
   normalizedMetricDigest: string;
   challenge: string;
   replaySubject: string;
@@ -115,6 +118,9 @@ export function canonicalLiskovProcessorCoverageResultV1(
     expiresAtMs,
     outcomes: unsigned.outcomes.map(normalizeOutcome),
     ...(unsigned.networkSample === undefined ? {} : { networkSample: normalizeNetworkSample(unsigned.networkSample) }),
+    ...(unsigned.inboundReachability === undefined
+      ? {}
+      : { inboundReachability: normalizeInboundReachability(unsigned.inboundReachability) }),
     normalizedMetricDigest: normalizeSha256Digest(
       unsigned.normalizedMetricDigest,
       "normalizedMetricDigest"

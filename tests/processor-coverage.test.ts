@@ -7,7 +7,8 @@ import {
   LISKOV_PROCESSOR_COVERAGE_RESULT_DOMAIN_V1,
   liskovProcessorCoverageResultV1Message,
   signLiskovProcessorCoverageResultV1,
-  type LiskovProcessorCoverageResultV1
+  type LiskovProcessorCoverageResultV1,
+  type InboundReachabilityV1
 } from "../src/processor-coverage.js";
 
 const VECTOR = JSON.parse(
@@ -70,4 +71,41 @@ it("preserves and validates the shared signed network sample", () => {
   const corrupt = structuredClone(vector.result);
   corrupt.networkSample!.metrics.lossBps = 0;
   assert.throws(() => canonicalLiskovProcessorCoverageResultV1(corrupt), /invalid network sample/u);
+});
+
+it("carries the shared inbound reachability block through canonicalization", () => {
+  const network = JSON.parse(readFileSync(new URL("./vectors/processor-coverage-network-v1.json", import.meta.url), "utf8")) as { result: LiskovProcessorCoverageResultV1 };
+  const inbound = JSON.parse(readFileSync(new URL("./vectors/processor-coverage-inbound-v1.json", import.meta.url), "utf8")) as { inboundReachability: InboundReachabilityV1 };
+  const result = { ...structuredClone(network.result), inboundReachability: inbound.inboundReachability };
+
+  // The normalizer rebuilds the envelope from a known key set, so a block it
+  // does not know about is dropped silently and the signature stops
+  // reproducing. This is the assertion that catches that.
+  const canonical = canonicalLiskovProcessorCoverageResultV1(result);
+  assert.deepEqual(canonical.inboundReachability, inbound.inboundReachability);
+
+  // Absence still canonicalizes to the exact bytes it always did.
+  assert.equal(
+    Buffer.from(liskovProcessorCoverageResultV1Message(network.result)).toString("utf8"),
+    (JSON.parse(readFileSync(new URL("./vectors/processor-coverage-network-v1.json", import.meta.url), "utf8")) as { canonicalSigningPayload: string }).canonicalSigningPayload
+  );
+
+  for (const corrupt of [
+    // A verdict claiming a path without the signature that proves it.
+    (r: LiskovProcessorCoverageResultV1) => { r.inboundReachability!.families[0]!.signature = null; },
+    // An unreachable family carrying one anyway.
+    (r: LiskovProcessorCoverageResultV1) => { r.inboundReachability!.families[1]!.signature = `0x${"c".repeat(128)}`; },
+    // Two verdicts for the same family.
+    (r: LiskovProcessorCoverageResultV1) => { r.inboundReachability!.families[1]!.family = "v4"; },
+    // Verdicts from two different probes spliced together.
+    (r: LiskovProcessorCoverageResultV1) => { r.inboundReachability!.families[1]!.challengeDigest = `sha256:${"2".repeat(64)}`; },
+    // A timeout that did not consume the wait it claims.
+    (r: LiskovProcessorCoverageResultV1) => { r.inboundReachability!.families[1]!.connectMs = 5; },
+    // A field the contract owner does not define.
+    (r: LiskovProcessorCoverageResultV1) => { (r.inboundReachability!.families[0] as unknown as Record<string, unknown>)["peerAddress"] = "203.0.113.1"; }
+  ]) {
+    const mutated = structuredClone(result);
+    corrupt(mutated);
+    assert.throws(() => canonicalLiskovProcessorCoverageResultV1(mutated), /invalid inbound reachability/u);
+  }
 });
