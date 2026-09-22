@@ -11,7 +11,7 @@ runtime and provides the default Liskov boot path:
 - Acurast environment and `_STD_` lookup.
 - Acurast runtime identity, signing, and decrypt helpers.
 - Liskov runtime-env fetch and refresh.
-- Lockbox-backed runtime secrets.
+- Managed runtime secrets.
 - Built-in encrypted Liskov logging.
 - Bounded Liskov runtime diagnostics and health events.
 - Runtime readiness/status and test hooks.
@@ -37,8 +37,8 @@ repository.
 
 Runtime v0.3.21 opts Liskov-owned POST requests into the server response tunnel
 used by Acurast processors that omit successful `httpPOST` response bodies. The
-adapter unwraps the original 2xx status and JSON before bootstrap, Lockbox, or
-Blackbox callers see it; ordinary fetch transports and servers that do not
+adapter unwraps the original 2xx status and JSON before bootstrap, secrets, or
+logging callers see it; ordinary fetch transports and servers that do not
 recognize the opt-in header retain their existing behavior.
 
 Runtime v0.3.22 adds identity-bound v2 diagnostics and a terminal application
@@ -60,16 +60,16 @@ through the v2 diagnostic fallback.
 Runtime v0.3.24 makes the canonical Application UID authoritative for new
 first-party runtime sessions while preserving the legacy Application ID in
 every compatibility surface. Runtime bootstrap v2 carries both identifiers;
-signed Runtime Environment v2, Lockbox request/response/encrypted-payload v2,
-Blackbox config v2, and runtime diagnostics v4 bind them where applicable. A
+signed Runtime Environment v2, secret request/response/encrypted-payload v2,
+logging config v2, and runtime diagnostics v4 bind them where applicable. A
 UID-bearing request fails closed on a missing UID, binding mismatch, or
 protocol downgrade; v1-v3 contracts remain available for previously published
 jobs.
 
 Runtime v0.3.25 makes a successful signed bootstrap authoritative over legacy
 bootstrap configuration delivered in the initial environment. This preserves
-the UID from the v2 response for Runtime Environment v2, Lockbox v2, and
-runtime diagnostics v4 instead of silently continuing on the legacy
+the UID from the v2 response for Runtime Environment v2, secrets protocol v2,
+and runtime diagnostics v4 instead of silently continuing on the legacy
 identifier-only configuration.
 
 Runtime v0.3.26 propagates that authenticated UID into the optional
@@ -137,8 +137,10 @@ interface BootstrapSlipwayRuntimeHandle {
 ```
 
 Additional readback fields are present for diagnostics and tests:
-`runtimeEnv`, `lockbox`, and `runtimeHealth`. Application code should normally
-use `env`, `status`, `whenReady`, `log`, `flush`, `refreshNow`, and `stop`.
+`runtimeEnv`, `lockbox` (the secrets readback, under its compatibility key), and
+`runtimeHealth`. They are diagnostic fields, not the product API; application
+code should normally use `env`, `status`, `whenReady`, `log`, `flush`,
+`refreshNow`, and `stop`.
 
 `stop()` is synchronous and idempotent for the current handle shape. It cancels
 runtime-env refresh, runtime-health timers, and background secret retries. Call
@@ -179,7 +181,7 @@ Common options:
 - `logging.earlyBufferMaxRecords`: in-memory log records to keep before
   logging config is available. Default: `100`.
 - `logging.spoolMode`: `auto`, `disk`, or `memory`.
-- `logging.spoolDir`: override the Blackbox spool directory.
+- `logging.spoolDir`: override the logging spool directory.
 - `logging.timeoutMs`: network timeout for logging writes.
 - `logging.onError`: observes logging failures without breaking the runtime
   wrapper.
@@ -249,7 +251,7 @@ When the bootstrap is present, the runtime signs a
 `proof.slipway.runtime-env-request.v1` request and POSTs it to
 `/api/jobs/runtime-env`. The response must bind the same application id,
 policy digest, deployment id, job id, and processor id. Returned values are
-installed into runtime env before Lockbox secrets are requested.
+installed into runtime env before managed secrets are requested.
 
 `refreshNow()` forces an immediate runtime-env refresh when the bootstrap
 config exists, then performs one deduped secrets attempt if
@@ -259,7 +261,7 @@ periodic runtime-env refresh is internal; Applications should use
 
 ## Secrets
 
-Lockbox secrets are a built-in Liskov runtime capability. Jobs receive compact
+Managed secrets are a built-in Liskov runtime capability. Jobs receive compact
 secret bootstrap config through `LISKOV_LOCKBOX_BOOTSTRAP`, falling back to the
 legacy `PROOF_LOCKBOX_BOOTSTRAP` name:
 
@@ -276,11 +278,14 @@ legacy `PROOF_LOCKBOX_BOOTSTRAP` name:
 ```
 
 Legacy expanded `PROOF_LOCKBOX_*` values remain supported for older jobs, but
-compact bootstrap is the preferred Acurast shape.
+compact bootstrap is the preferred Acurast shape. Lockbox is the internal name
+of the managed-secrets service; it survives only in compatibility identifiers
+such as these environment names and the diagnostic stage ids below, which
+Applications read or set but never need to learn as a product.
 
 ### Required
 
-Required mode is the default when Lockbox bootstrap exists:
+Required mode is the default when secret bootstrap config exists:
 
 ```ts
 const runtime = await bootstrapSlipwayRuntime({
@@ -288,9 +293,9 @@ const runtime = await bootstrapSlipwayRuntime({
 });
 ```
 
-Bootstrap waits for Lockbox, verifies the encrypted payload, installs returned
-env/file secrets, and fails closed if the request is rejected or the payload
-does not verify.
+Bootstrap waits for the secret request, verifies the encrypted payload,
+installs returned env/file secrets, and fails closed if the request is rejected
+or the payload does not verify.
 
 ### Background
 
@@ -310,7 +315,7 @@ const runtime = await bootstrapSlipwayRuntime({
 });
 ```
 
-Bootstrap returns before the first Lockbox request. The secrets capability
+Bootstrap returns before the first secret request. The secrets capability
 reports `pending`, `degraded`, `failed`, or `ready`, but it is not a readiness
 blocker because it is not required. `refreshNow()` performs one immediate
 attempt while the retry budget is still open. `stop()` cancels scheduled
@@ -318,7 +323,7 @@ background retries.
 
 ### Off
 
-Use `secrets: { mode: "off" }` for jobs that intentionally ignore Lockbox
+Use `secrets: { mode: "off" }` for jobs that intentionally ignore secret
 bootstrap values.
 
 ### Installation Rules
@@ -336,8 +341,10 @@ file-base field. File targets are written below that directory with mode
 
 ## Logging
 
-Blackbox is presented to Applications as Liskov logging. Application code
-should call `runtime.log()` instead of constructing a Blackbox writer:
+Liskov logging is the runtime's built-in encrypted log capability. Blackbox is
+its internal name, which survives only in the `BLACKBOX_*` compatibility
+values below. Application code should call `runtime.log()` instead of
+constructing a log writer:
 
 ```ts
 await runtime.log("worker.tick", { processed: 12 }, {
@@ -348,10 +355,10 @@ await runtime.log("worker.tick", { processed: 12 }, {
 const result = await runtime.flush();
 ```
 
-The runtime validates and attaches logging after runtime-env and Lockbox
+The runtime validates and attaches logging after runtime-env and secret
 installation. If a log is written before logging config is available, the
 runtime keeps it in the early in-memory buffer. When config appears later,
-`refreshNow()` or the next `log()` drains the buffer into encrypted Blackbox
+`refreshNow()` or the next `log()` drains the buffer into encrypted log
 records.
 
 The default `background` logging mode never blocks readiness. Use
@@ -433,8 +440,8 @@ Useful stages include:
 
 Local diagnostic callbacks and remote diagnostic sends use a 1.5 second
 default timeout. Remote diagnostic failures pause further remote diagnostic
-attempts for 30 seconds so startup, runtime-env, and Lockbox flows cannot be
-blocked by observability.
+attempts for 30 seconds so startup, runtime-env, and secret-request flows
+cannot be blocked by observability.
 
 Health diagnostics start under the same authentication rule as other remote
 diagnostics. Defaults are a 30 second initial delay and 30 second interval.
@@ -559,19 +566,19 @@ flow alignment, not more selected Acurast example ports.
 
 - Do not put Liskov server control tokens in runtime env or diagnostics.
 - Do not put plaintext runtime secrets in Liskov runtime-env.
-- Runtime secrets must come from Lockbox and be encrypted to the job response
-  encryption key.
-- HTTPS is required for Liskov, Lockbox, and Blackbox URLs outside local/test
+- Runtime secrets must come from the managed-secrets service and be encrypted
+  to the job response encryption key.
+- HTTPS is required for Liskov, secrets, and logging URLs outside local/test
   hosts unless an explicit insecure override is supplied.
-- Signed runtime-env and Lockbox v2 requests bind Application UID,
+- Signed runtime-env and secrets protocol v2 requests bind Application UID,
   compatibility application id, policy digest, deployment id, job id,
   processor id, nonce, and expiry.
-- Lockbox encrypted payloads must bind payload digest, request/response fields,
-  and requested secret ids before installation.
+- Managed-secret encrypted payloads must bind payload digest, request/response
+  fields, and requested secret ids before installation.
 - File-target secrets are written only under the configured base directory.
 - `@proof-computer/liskov-runtime` runs inside the job TEE. Liskov control
-  plane services, Lockbox, Blackbox, and CLI/server workflows are separate
-  off-TEE systems.
+  plane services, the managed-secrets and logging services, and CLI/server
+  workflows are separate off-TEE systems.
 - This package does not make Switchboard a required dependency. Use
   `@proof-computer/slipway-switchboard` only for Liskov-managed Switchboard
   ingress jobs.
@@ -596,11 +603,11 @@ The `./encrypted-code` export verifies an AES-256-GCM payload before loading a
 self-contained CommonJS module that exports `async start(runtime)`. The caller
 first completes `bootstrapSlipwayRuntime` and passes that same handle; the
 payload must not bootstrap a second runtime. `startEncryptedApplication`
-requires a matching, installed, UID/deployment-bound Lockbox secret named by the
+requires a matching, installed, UID/deployment-bound managed secret named by the
 public descriptor, delivered to `LISKOV_CODE_KEY`. An ordinary environment value
 alone is refused. Keys use canonical standard base64 encoding of 32 random bytes.
 
-The processor also needs a working P-256 response key for its Lockbox grant.
+The processor also needs a working P-256 response key for its secret grant.
 The Android implementation requires Android 12 or later; a `DataEncryption`
 advertisement alone does not establish P-256 support. `lockbox_response_key_missing`
 identifies this processor key, while `LISKOV_CODE_KEY` is the separate application
@@ -628,7 +635,7 @@ and emitted signed application completion. Actions supplies a runtime home
 inside the processor job directory, where filesystem access is permitted.
 The [capability matrix](https://docs.proof.computer/liskov/reference/capabilities)
 retains the separate registered V5 public-release boundary.
-The existing managed Lockbox trust boundary still applies:
+The existing managed-secrets trust boundary still applies:
 PROOF can access the code key during managed release. This is not a claim of
 operator-blind execution or a Cargo private-image capability.
 

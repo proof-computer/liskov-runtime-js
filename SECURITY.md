@@ -6,8 +6,8 @@ Use this checklist before cutting a public
 ## Runtime Authority
 
 - Runtime jobs must not receive Liskov server control tokens.
-- Runtime jobs must not receive Lockbox control tokens.
-- Runtime jobs sign runtime-env and Lockbox requests with the Acurast
+- Runtime jobs must not receive managed-secrets service control tokens.
+- Runtime jobs sign runtime-env and secret requests with the Acurast
   job-owned Ed25519 signer.
 - Signed v2 requests must bind Application UID, compatibility application id,
   policy digest, deployment id, job id, processor id, nonce, and expiry.
@@ -15,18 +15,20 @@ Use this checklist before cutting a public
 ## Secret Handling
 
 - Plaintext runtime secrets must not be served through Slipway runtime-env.
-- Plaintext runtime secrets must not be emitted in diagnostics or Blackbox log
-  batches.
-- Lockbox payloads must be encrypted to the job response encryption key.
-- Lockbox encrypted payload digest and plaintext digest must be verified before
-  installing secrets.
-- Lockbox v2 encrypted payloads must verify the canonical response-AAD digest
-  and the decrypted Application UID/application-id binding before installation.
-- Lockbox plaintext payload fields must match the signed request and response.
+- Plaintext runtime secrets must not be emitted in diagnostics or Liskov
+  logging batches.
+- Managed-secret payloads must be encrypted to the job response encryption key.
+- Managed-secret encrypted payload digest and plaintext digest must be verified
+  before installing secrets.
+- Secrets protocol v2 encrypted payloads must verify the canonical response-AAD
+  digest and the decrypted Application UID/application-id binding before
+  installation.
+- Managed-secret plaintext payload fields must match the signed request and
+  response.
 - File-target secret writes must stay under the configured base directory and
   use mode `0600`.
 - Runtime and CLI state must live under `SLIPWAY_HOME`, defaulting to
-  `~/.slipway` when a home directory is available. Blackbox/Lockbox-specific
+  `~/.slipway` when a home directory is available. Logging- or secrets-specific
   home directories must not be promoted as the user-facing model.
 
 ## Transport
@@ -35,7 +37,7 @@ Use this checklist before cutting a public
 - HTTP is allowed only for localhost/test hosts or explicit insecure local
   override env.
 - Diagnostic POSTs must be bounded and best-effort; failed diagnostic delivery
-  must not block runtime-env or Lockbox startup.
+  must not block runtime-env or secrets startup.
 
 ## Diagnostics
 
