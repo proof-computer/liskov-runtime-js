@@ -31,9 +31,9 @@ The first supported dependency source is the public GitHub release tag:
 npmjs publication is a separate release step and is not required for the
 initial runtime cutover.
 
-The package tarball intentionally contains only `dist`, `README.md`,
-`SECURITY.md`, and package metadata. Example source and tests stay in the
-repository.
+The package tarball intentionally contains only `dist`, `LICENSE`,
+`README.md`, `SECURITY.md`, and package metadata. Example source and tests
+stay in the repository.
 
 Runtime v0.3.21 opts Liskov-owned POST requests into the server response tunnel
 used by Acurast processors that omit successful `httpPOST` response bodies. The
@@ -661,3 +661,17 @@ delivers no environment (`runtimeEnv.enabled: false`). Earlier versions
 dropped the whole runtime config in that case and never checked in after
 bootstrap, so core reported every such runtime as contact lost. The
 runtime-env refresh stays off for those jobs; only the check-ins run.
+
+## License
+
+From v0.3.34, this package is licensed under the
+[Functional Source License, Version 1.1, ALv2 Future License](LICENSE)
+(SPDX `FSL-1.1-Apache-2.0`). The licensor is Moose Labs Ltd. You may use,
+copy, modify, and redistribute the SDK for any purpose other than a Competing
+Use, as the license defines it. Building and running your own Applications on
+it is a Permitted Purpose. Each version becomes available under the
+Apache License, Version 2.0 on the second anniversary of the date it was
+released.
+
+The change applies from v0.3.34 onward only. Release tags up to and including
+`v0.3.33` remain as they shipped: their `package.json` declares `MIT`.

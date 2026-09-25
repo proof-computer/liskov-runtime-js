@@ -1,6 +1,6 @@
 {
   "name": "@proof-computer/liskov-runtime",
-  "version": "0.3.33",
+  "version": "0.3.34",
   "private": false,
   "description": "Job-side Liskov runtime bootstrap SDK for PROOF Applications on Acurast.",
   "type": "module",
@@ -13,12 +13,13 @@
   "bugs": {
     "url": "https://github.com/proof-computer/liskov-runtime-js/issues"
   },
-  "license": "MIT",
+  "license": "FSL-1.1-Apache-2.0",
   "engines": {
     "node": ">=22"
   },
   "files": [
     "dist",
+    "LICENSE",
     "README.md",
     "SECURITY.md"
   ],
