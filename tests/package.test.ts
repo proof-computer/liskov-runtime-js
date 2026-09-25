@@ -12,17 +12,17 @@ interface PackageJson {
 }
 
 describe("public package metadata", () => {
-  it("is ready for the v0.3.33 Liskov runtime package path", async () => {
+  it("is ready for the v0.3.34 Liskov runtime package path", async () => {
     const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as PackageJson;
 
     assert.equal(packageJson.name, "@proof-computer/liskov-runtime");
-    assert.equal(packageJson.version, "0.3.33");
+    assert.equal(packageJson.version, "0.3.34");
     assert.equal(packageJson.private, false);
     assert.deepEqual(packageJson.repository, {
       type: "git",
       url: "git+https://github.com/proof-computer/liskov-runtime-js.git"
     });
-    assert.deepEqual(packageJson.files?.sort(), ["README.md", "SECURITY.md", "dist"]);
+    assert.deepEqual(packageJson.files?.sort(), ["LICENSE", "README.md", "SECURITY.md", "dist"]);
     assert.equal(packageJson.scripts?.["pack:dry-run"], "npm pack --dry-run --json");
   });
 });
