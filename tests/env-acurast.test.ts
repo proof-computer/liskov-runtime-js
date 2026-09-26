@@ -5,6 +5,7 @@ import {
   createAcurastRuntimeAdapter,
   createAcurastHttpPostFetch,
   getRuntimeEnvValue,
+  resolveAcurastRuntimeIdentity,
   type AcurastRuntimeStd
 } from "../src/index.js";
 
@@ -85,6 +86,145 @@ describe("runtime env lookup and Acurast adapter", () => {
       processorId: "processor-1",
       responseEncryptionKey: "02".repeat(33)
     });
+  });
+
+  it("resolves a secp256k1 response key when the processor exposes no p256 key", async () => {
+    const encryptCalls: string[] = [];
+    let k1Primed = false;
+    const std: AcurastRuntimeStd = {
+      job: {
+        getId: () => "job-1",
+        getEncryptionKeys: () => k1Primed ? { secp256k1: "0x" + "03".repeat(33) } : {} as Record<string, string>
+      },
+      device: {
+        getAddress: () => "processor-1"
+      },
+      signers: {
+        secp256k1: {
+          encrypt: (publicKey) => {
+            encryptCalls.push(publicKey);
+            k1Primed = true;
+            return "0x00";
+          },
+          decrypt: () => "0x00"
+        }
+      }
+    };
+    const adapter = createAcurastRuntimeAdapter({ env: {}, std });
+
+    assert.deepEqual(await adapter.resolveIdentity({ requireEncryptionKey: true }), {
+      jobId: "job-1",
+      processorId: "processor-1",
+      responseEncryptionKey: "03".repeat(33)
+    });
+    assert.equal(encryptCalls.length, 1);
+    assert.match(encryptCalls[0], /^02/u);
+    assert.equal(resolveAcurastRuntimeIdentity({ env: {}, std }, { requireEncryptionKey: true }).responseEncryptionKey, "03".repeat(33));
+  });
+
+  it("resolves the p256 key and never primes secp256k1 when both are exposed", async () => {
+    const k1EncryptCalls: string[] = [];
+    const std: AcurastRuntimeStd = {
+      job: {
+        getId: () => "job-1",
+        getEncryptionKeys: () => ({ secp256k1: "03".repeat(33), p256: "02".repeat(33) })
+      },
+      device: {
+        getAddress: () => "processor-1"
+      },
+      signers: {
+        secp256r1: {
+          encrypt: () => "0x00"
+        },
+        secp256k1: {
+          encrypt: (publicKey) => {
+            k1EncryptCalls.push(publicKey);
+            return "0x00";
+          }
+        }
+      }
+    };
+    const adapter = createAcurastRuntimeAdapter({ env: {}, std });
+
+    assert.equal((await adapter.resolveIdentity({ requireEncryptionKey: true })).responseEncryptionKey, "02".repeat(33));
+    assert.equal(resolveAcurastRuntimeIdentity({ env: {}, std }, { requireEncryptionKey: true }).responseEncryptionKey, "02".repeat(33));
+    assert.deepEqual(k1EncryptCalls, []);
+  });
+
+  it("still requires a response key when neither a p256 nor a secp256k1 key is exposed", async () => {
+    const std: AcurastRuntimeStd = {
+      job: {
+        getId: () => "job-1",
+        getEncryptionKeys: () => ({ ed25519: "04".repeat(32) })
+      },
+      device: {
+        getAddress: () => "processor-1"
+      },
+      signers: {
+        secp256r1: { encrypt: () => "0x00" },
+        secp256k1: { encrypt: () => "0x00" }
+      }
+    };
+    const adapter = createAcurastRuntimeAdapter({ env: {}, std });
+
+    await assert.rejects(
+      () => adapter.resolveIdentity({ requireEncryptionKey: true }),
+      /^Error: Acurast response encryption key is required for Lockbox bootstrap$/u
+    );
+  });
+
+  it("decrypts each envelope through the signer of its curve", async () => {
+    const calls: Array<{ curve: string; args: string[] }> = [];
+    const signer = (curve: string, plaintext: string) => ({
+      decrypt: (publicKey: string, salt: string, ciphertext: string) => {
+        calls.push({ curve, args: [publicKey, salt, ciphertext] });
+        return "0x" + Buffer.from(plaintext, "utf8").toString("hex");
+      }
+    });
+    const adapter = createAcurastRuntimeAdapter({
+      env: {},
+      std: {
+        signers: {
+          secp256r1: signer("secp256r1", "p256-plaintext"),
+          secp256k1: signer("secp256k1", "k1-plaintext")
+        }
+      }
+    });
+
+    const k1 = await adapter.decryptGrantPayload({
+      curveName: "secp256k1",
+      senderPublicKey: "0x02" + "aa".repeat(32),
+      saltHex: "0x" + "bb".repeat(16),
+      ciphertextHex: "0x" + "cc".repeat(40)
+    });
+    const p256 = await adapter.decryptGrantPayload({
+      curveName: "secp256r1",
+      senderPublicKey: "0x03" + "dd".repeat(32),
+      saltHex: "0x" + "ee".repeat(16),
+      ciphertextHex: "0x" + "ff".repeat(40)
+    });
+
+    assert.equal(Buffer.from(k1).toString("utf8"), "k1-plaintext");
+    assert.equal(Buffer.from(p256).toString("utf8"), "p256-plaintext");
+    assert.deepEqual(calls, [
+      { curve: "secp256k1", args: ["0x02" + "aa".repeat(32), "0x" + "bb".repeat(16), "0x" + "cc".repeat(40)] },
+      { curve: "secp256r1", args: ["0x03" + "dd".repeat(32), "0x" + "ee".repeat(16), "0x" + "ff".repeat(40)] }
+    ]);
+    await assert.rejects(() => adapter.decryptGrantPayload({
+      curveName: "ed25519",
+      senderPublicKey: "00",
+      saltHex: "00",
+      ciphertextHex: "00"
+    }), /unsupported curve/u);
+    await assert.rejects(() => createAcurastRuntimeAdapter({
+      env: {},
+      std: { signers: { secp256r1: signer("secp256r1", "p256-plaintext") } }
+    }).decryptGrantPayload({
+      curveName: "secp256k1",
+      senderPublicKey: "00",
+      saltHex: "00",
+      ciphertextHex: "00"
+    }), /secp256k1 decrypt/u);
   });
 
   it("adapts Acurast httpPOST to the fetch surface used by runtime bootstrap", async () => {

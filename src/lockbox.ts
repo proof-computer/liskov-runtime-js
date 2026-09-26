@@ -74,8 +74,11 @@ export interface LockboxRuntimeJobSecretEncryptedPayload {
   domain:
     | typeof LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN_V1
     | typeof LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN_V2;
-  version: "acurast-p256-hkdf-aes-256-gcm-v1" | "acurast-p256-hkdf-aes-256-gcm-v2";
-  curveName: "secp256r1";
+  version:
+    | "acurast-p256-hkdf-aes-256-gcm-v1"
+    | "acurast-p256-hkdf-aes-256-gcm-v2"
+    | "acurast-secp256k1-hkdf-aes-256-gcm-v1";
+  curveName: "secp256r1" | "secp256k1";
   senderPublicKey: string;
   saltHex: string;
   ciphertextHex: string;
@@ -596,20 +599,35 @@ export function parseLockboxPlaintextPayload(value: unknown): LockboxRuntimeJobS
   };
 }
 
-export function parseLockboxEncryptedPayload(value: unknown): LockboxRuntimeJobSecretEncryptedPayload {
-  const record = asRecord(value, "Lockbox encrypted payload");
-  const domain = lockboxEncryptedPayloadDomain(record.domain);
-  const version = requiredString(record, "version");
-  const curveName = requiredString(record, "curveName");
+// A p256 envelope carries the version id of its payload domain. The secp256k1
+// envelope (ADR-0172 §1) has one version id, and each id is valid only with
+// its own curve name.
+function lockboxEncryptedPayloadEnvelope(
+  domain: LockboxRuntimeJobSecretEncryptedPayload["domain"],
+  version: string,
+  curveName: string
+): Pick<LockboxRuntimeJobSecretEncryptedPayload, "version" | "curveName"> {
+  if (version === "acurast-secp256k1-hkdf-aes-256-gcm-v1") {
+    if (curveName !== "secp256k1") throw new Error("Lockbox encrypted payload has an unsupported curve");
+    return { version, curveName };
+  }
   const expectedVersion = domain === LOCKBOX_RUNTIME_JOB_SECRET_ENCRYPTED_PAYLOAD_DOMAIN_V2
     ? "acurast-p256-hkdf-aes-256-gcm-v2"
     : "acurast-p256-hkdf-aes-256-gcm-v1";
   if (version !== expectedVersion) throw new Error("Lockbox encrypted payload has an unsupported version");
   if (curveName !== "secp256r1") throw new Error("Lockbox encrypted payload has an unsupported curve");
+  return { version, curveName };
+}
+
+export function parseLockboxEncryptedPayload(value: unknown): LockboxRuntimeJobSecretEncryptedPayload {
+  const record = asRecord(value, "Lockbox encrypted payload");
+  const domain = lockboxEncryptedPayloadDomain(record.domain);
+  const version = requiredString(record, "version");
+  const curveName = requiredString(record, "curveName");
+  const envelope = lockboxEncryptedPayloadEnvelope(domain, version, curveName);
   return {
     domain,
-    version,
-    curveName,
+    ...envelope,
     senderPublicKey: requiredString(record, "senderPublicKey"),
     saltHex: requiredString(record, "saltHex"),
     ciphertextHex: requiredString(record, "ciphertextHex"),

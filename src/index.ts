@@ -1461,7 +1461,9 @@ function runtimeCapabilityAttrs(
     hasDeviceAddress: Boolean(getFirstRuntimeEnvValue(DEFAULT_PROCESSOR_ID_ENV_NAMES, lookup) ?? stringifyRuntimeValue(std?.device?.getAddress?.())),
     hasEd25519Signer: typeof std?.signers?.ed25519?.sign === "function",
     hasSecp256r1Encrypt: typeof std?.signers?.secp256r1?.encrypt === "function",
-    hasSecp256r1Decrypt: typeof std?.signers?.secp256r1?.decrypt === "function"
+    hasSecp256r1Decrypt: typeof std?.signers?.secp256r1?.decrypt === "function",
+    hasSecp256k1Encrypt: typeof std?.signers?.secp256k1?.encrypt === "function",
+    hasSecp256k1Decrypt: typeof std?.signers?.secp256k1?.decrypt === "function"
   };
 }
 
