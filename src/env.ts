@@ -19,6 +19,10 @@ export interface AcurastRuntimeStd {
       encrypt?: (publicKey: string, salt: string, plaintext: string) => string | Promise<string>;
       decrypt?: (publicKey: string, salt: string, ciphertext: string) => string | Promise<string>;
     };
+    secp256k1?: {
+      encrypt?: (publicKey: string, salt: string, plaintext: string) => string | Promise<string>;
+      decrypt?: (publicKey: string, salt: string, ciphertext: string) => string | Promise<string>;
+    };
   };
 }
 

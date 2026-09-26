@@ -6,7 +6,9 @@ import {
   bootstrapSlipwayRuntime,
   buildLiskovRuntimeBootstrapRequest,
   buildLiskovSecretBootstrapRequest,
+  classifyLiskovRuntimeBootstrapFailure,
   createAcurastHttpPostFetch,
+  createAcurastRuntimeAdapter,
   DEFAULT_LISKOV_SECRETS_URL,
   decryptProofLogRecord,
   generateProofLogEncryptionKey,
@@ -1289,6 +1291,28 @@ describe("top-level Slipway runtime bootstrap", () => {
       stage: "runtime.fatal.bootstrap",
       code: "lockbox_response_key_missing"
     }]);
+  });
+
+  it("classifies an Acurast std exposing neither a p256 nor a secp256k1 key as lockbox_response_key_missing", async () => {
+    const adapter = createAcurastRuntimeAdapter({
+      env: {},
+      std: {
+        job: { getId: () => "job-1", getEncryptionKeys: () => ({}) },
+        device: { getAddress: () => "processor-1" },
+        signers: {
+          secp256r1: { encrypt: () => "0x00", decrypt: () => "0x00" },
+          secp256k1: { encrypt: () => "0x00", decrypt: () => "0x00" }
+        }
+      }
+    });
+    let caught: unknown;
+    try {
+      await adapter.resolveIdentity({ requireEncryptionKey: true });
+    } catch (error) {
+      caught = error;
+    }
+    assert.ok(caught instanceof Error);
+    assert.equal(classifyLiskovRuntimeBootstrapFailure(caught), "lockbox_response_key_missing");
   });
 
   it("stops scheduled background secret retries", async () => {

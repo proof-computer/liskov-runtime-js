@@ -339,6 +339,23 @@ File secrets require `PROOF_LOCKBOX_FILE_BASE_DIR` or the compact bootstrap
 file-base field. File targets are written below that directory with mode
 `0600`; path traversal outside the base directory is rejected.
 
+### Response Encryption Key
+
+The secret request carries the processor's response encryption key, read from
+`_STD_.job.getEncryptionKeys()`. The runtime accepts two encrypted-payload
+envelopes:
+
+| Processor key | `version` | `curveName` | Decrypted through |
+| --- | --- | --- | --- |
+| P-256 | `acurast-p256-hkdf-aes-256-gcm-v1` (`-v2` on the v2 payload domain) | `secp256r1` | `_STD_.signers.secp256r1.decrypt` |
+| secp256k1 | `acurast-secp256k1-hkdf-aes-256-gcm-v1` | `secp256k1` | `_STD_.signers.secp256k1.decrypt` |
+
+A P-256 key is always preferred. The secp256k1 key is used only when the
+processor exposes no P-256 key, which matches the key Acurast selects for the
+processor's acknowledgement. A version paired with the other curve's name is
+refused. When the processor exposes neither key, bootstrap fails with
+`lockbox_response_key_missing`.
+
 ## Logging
 
 Liskov logging is the runtime's built-in encrypted log capability. Blackbox is
@@ -607,8 +624,9 @@ requires a matching, installed, UID/deployment-bound managed secret named by the
 public descriptor, delivered to `LISKOV_CODE_KEY`. An ordinary environment value
 alone is refused. Keys use canonical standard base64 encoding of 32 random bytes.
 
-The processor also needs a working P-256 response key for its secret grant.
-The Android implementation requires Android 12 or later; a `DataEncryption`
+The processor also needs a working response key for its secret grant: P-256,
+or secp256k1 when it exposes no P-256 key (see Response Encryption Key).
+The Android implementation requires Android 12 or later for P-256; a `DataEncryption`
 advertisement alone does not establish P-256 support. `lockbox_response_key_missing`
 identifies this processor key, while `LISKOV_CODE_KEY` is the separate application
 AES key. Follow the [encrypted JavaScript guide](https://docs.proof.computer/liskov/build/encrypted-javascript)

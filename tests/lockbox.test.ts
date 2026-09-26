@@ -12,8 +12,10 @@ import {
   lockboxRuntimeConfigFromBootstrap,
   lockboxRuntimeJobSecretRequestMessage,
   lockboxRuntimeResponseAad,
+  parseLockboxEncryptedPayload,
   parseLockboxPlaintextPayload,
   readLockboxRuntimeConfig,
+  type LockboxRuntimeJobSecretEncryptedPayload,
   type LockboxRuntimeJobSecretPlaintextPayload,
   type LockboxRuntimeJobSecretSignedRequest,
   type RuntimeFileWriter,
@@ -178,6 +180,83 @@ describe("Lockbox runtime secrets", () => {
     assert.deepEqual(installed.skippedExistingEnv, []);
   });
 
+  it("parses the p256 envelopes and the secp256k1 envelope, and rejects a mismatched version and curve", () => {
+    const base = {
+      senderPublicKey: "0x" + "cd".repeat(33),
+      saltHex: "0x" + "00".repeat(16),
+      ciphertextHex: "0x" + "ef".repeat(16),
+      plaintextDigest: "sha256:" + "3".repeat(64),
+      encryptedPayloadDigest: "sha256:" + "4".repeat(64)
+    };
+    const v1 = "proof.lockbox.job-secret-response.encrypted-payload.v1";
+    const v2 = "proof.lockbox.job-secret-response.encrypted-payload.v2";
+    const envelope = (domain: string, version: string, curveName: string) => ({
+      ...base,
+      domain,
+      version,
+      curveName,
+      ...(domain === v2 ? { aadDigest: "sha256:" + "5".repeat(64) } : {})
+    });
+
+    for (const [domain, version, curveName] of [
+      [v1, "acurast-p256-hkdf-aes-256-gcm-v1", "secp256r1"],
+      [v2, "acurast-p256-hkdf-aes-256-gcm-v2", "secp256r1"],
+      [v1, "acurast-secp256k1-hkdf-aes-256-gcm-v1", "secp256k1"],
+      [v2, "acurast-secp256k1-hkdf-aes-256-gcm-v1", "secp256k1"]
+    ] as const) {
+      const parsed = parseLockboxEncryptedPayload(envelope(domain, version, curveName));
+      assert.equal(parsed.version, version);
+      assert.equal(parsed.curveName, curveName);
+    }
+
+    assert.throws(
+      () => parseLockboxEncryptedPayload(envelope(v1, "acurast-p256-hkdf-aes-256-gcm-v1", "secp256k1")),
+      /^Error: Lockbox encrypted payload has an unsupported curve$/u
+    );
+    assert.throws(
+      () => parseLockboxEncryptedPayload(envelope(v1, "acurast-secp256k1-hkdf-aes-256-gcm-v1", "secp256r1")),
+      /^Error: Lockbox encrypted payload has an unsupported curve$/u
+    );
+    assert.throws(
+      () => parseLockboxEncryptedPayload(envelope(v1, "acurast-p256-hkdf-aes-256-gcm-v2", "secp256r1")),
+      /unsupported version/u
+    );
+    assert.throws(
+      () => parseLockboxEncryptedPayload(envelope(v1, "acurast-secp256k1-hkdf-aes-256-gcm-v2", "secp256k1")),
+      /unsupported version/u
+    );
+  });
+
+  it("hands a secp256k1 envelope to the identity provider with its curve name", async () => {
+    const env: Record<string, string | undefined> = {};
+    const plaintext = plaintextPayload([{ secretId: "api-token", name: "API_TOKEN", value: "secret" }]);
+    const decrypted: Array<{ curveName?: string }> = [];
+    const identityProvider = fakeIdentityProvider({ plaintext });
+    const decryptGrantPayload = identityProvider.decryptGrantPayload.bind(identityProvider);
+    identityProvider.decryptGrantPayload = async (encrypted) => {
+      decrypted.push({ curveName: encrypted.curveName });
+      return decryptGrantPayload(encrypted);
+    };
+
+    const result = await loadLockboxRuntimeSecrets({
+      identityProvider,
+      config: lockboxConfig({ requestedSecretIds: ["api-token"], nonce: "nonce-1" }),
+      env,
+      nowMs: () => 1_000,
+      fetchImpl: (async (_url, init) => {
+        const request = JSON.parse(String(init?.body)) as LockboxRuntimeJobSecretSignedRequest;
+        return jsonResponse(lockboxResponse(request, plaintext, {
+          version: "acurast-secp256k1-hkdf-aes-256-gcm-v1",
+          curveName: "secp256k1"
+        }));
+      }) as typeof fetch
+    });
+
+    assert.deepEqual(decrypted, [{ curveName: "secp256k1" }]);
+    assert.equal(result.response.encryptedPayload.curveName, "secp256k1");
+    assert.equal(env.API_TOKEN, "secret");
+  });
+
   it("fails closed on plaintext digest and binding mismatches", async () => {
     const request = await buildLockboxRuntimeJobSecretRequest({
       identityProvider: fakeIdentityProvider(),
@@ -265,12 +344,18 @@ function plaintextPayload(
   };
 }
 
-function lockboxResponse(request: LockboxRuntimeJobSecretSignedRequest, plaintext: LockboxRuntimeJobSecretPlaintextPayload) {
+function lockboxResponse(
+  request: LockboxRuntimeJobSecretSignedRequest,
+  plaintext: LockboxRuntimeJobSecretPlaintextPayload,
+  envelope: Pick<LockboxRuntimeJobSecretEncryptedPayload, "version" | "curveName"> = {
+    version: "acurast-p256-hkdf-aes-256-gcm-v1",
+    curveName: "secp256r1"
+  }
+) {
   const plaintextText = JSON.stringify(plaintext);
   const encryptedBase = {
     domain: "proof.lockbox.job-secret-response.encrypted-payload.v1" as const,
-    version: "acurast-p256-hkdf-aes-256-gcm-v1" as const,
-    curveName: "secp256r1" as const,
+    ...envelope,
     senderPublicKey: "0x" + "cd".repeat(33),
     saltHex: "0x" + "00".repeat(16),
     ciphertextHex: "0x" + "ef".repeat(16),

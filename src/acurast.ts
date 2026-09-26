@@ -30,11 +30,15 @@ export interface RuntimeIdentity {
 export interface RuntimeIdentityProvider {
   resolveIdentity(options?: { requireEncryptionKey?: boolean }): Promise<RuntimeIdentity>;
   sign(message: Uint8Array): Promise<string>;
-  decryptGrantPayload(encrypted: {
-    senderPublicKey: string;
-    saltHex: string;
-    ciphertextHex: string;
-  }): Promise<Uint8Array>;
+  decryptGrantPayload(encrypted: AcurastEncryptedRuntimePayload): Promise<Uint8Array>;
+}
+
+export interface AcurastEncryptedRuntimePayload {
+  /** Curve the payload was encrypted on. Absent means secp256r1 (p256). */
+  curveName?: string;
+  senderPublicKey: string;
+  saltHex: string;
+  ciphertextHex: string;
 }
 
 export interface AcurastRuntimeAdapterOptions extends RuntimeEnvLookupOptions {
@@ -72,6 +76,15 @@ export const DEFAULT_ENCRYPTION_KEY_ENV_NAMES = [
 
 const P256_ENCRYPTION_KEY_PRIME_PUBLIC_KEY =
   "036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296";
+const SECP256K1_ENCRYPTION_KEY_PRIME_PUBLIC_KEY =
+  "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+
+// Selection mirrors the Acurast SDK's tier order: any p256 key first, and
+// secp256k1 only when the processor exposes no p256 key. Preferring k1 while a
+// p256 key exists would diverge from the acknowledgement's selected key and be
+// refused as response_key_mismatch.
+const P256_ENCRYPTION_KEY_NAMES = ["p256", "secp256r1", "secp256r1Encryption", "encP256"] as const;
+const SECP256K1_ENCRYPTION_KEY_NAMES = ["secp256k1", "secp256k1Encryption", "encSecp256k1"] as const;
 
 export function createAcurastRuntimeAdapter(options: AcurastRuntimeAdapterOptions = {}): RuntimeIdentityProvider {
   return {
@@ -125,6 +138,9 @@ export async function resolveAcurastRuntimeIdentityAsync(
   const std = resolveRuntimeStd(options.std);
   if (resolveOptions.requireEncryptionKey === true) {
     await primeAcurastEncryptionKeys(std);
+    if (needsSecp256k1EncryptionKey(std, options)) {
+      await primeAcurastSecp256k1EncryptionKey(std);
+    }
   }
   return resolveAcurastRuntimeIdentityFromStd(std, options, resolveOptions);
 }
@@ -136,6 +152,9 @@ export function resolveAcurastRuntimeIdentity(
   const std = resolveRuntimeStd(options.std);
   if (resolveOptions.requireEncryptionKey === true) {
     primeAcurastEncryptionKeysBestEffort(std);
+    if (needsSecp256k1EncryptionKey(std, options)) {
+      primeAcurastSecp256k1EncryptionKeyBestEffort(std);
+    }
   }
   return resolveAcurastRuntimeIdentityFromStd(std, options, resolveOptions);
 }
@@ -290,7 +309,8 @@ function resolveAcurastRuntimeIdentityFromStd(
   if (resolveOptions.requireEncryptionKey === true) {
     const responseEncryptionKey =
       getFirstRuntimeEnvValue(options.encryptionKeyEnvNames ?? DEFAULT_ENCRYPTION_KEY_ENV_NAMES, options) ??
-      encryptionKeyFromStd(std);
+      encryptionKeyFromStd(std, P256_ENCRYPTION_KEY_NAMES) ??
+      encryptionKeyFromStd(std, SECP256K1_ENCRYPTION_KEY_NAMES);
     if (!responseEncryptionKey) {
       throw new Error("Acurast response encryption key is required for Lockbox bootstrap");
     }
@@ -332,6 +352,39 @@ function primeAcurastEncryptionKeysBestEffort(std: AcurastRuntimeStd | undefined
   }
 }
 
+// getEncryptionKeys() is materialised lazily by the first encrypt call on each
+// curve. The secp256k1 key is primed only once no p256 key is exposed, so a
+// p256 processor sees exactly the calls it saw before.
+function needsSecp256k1EncryptionKey(std: AcurastRuntimeStd | undefined, options: AcurastRuntimeAdapterOptions): boolean {
+  return (
+    getFirstRuntimeEnvValue(options.encryptionKeyEnvNames ?? DEFAULT_ENCRYPTION_KEY_ENV_NAMES, options) === undefined &&
+    encryptionKeyFromStd(std, P256_ENCRYPTION_KEY_NAMES) === undefined
+  );
+}
+
+async function primeAcurastSecp256k1EncryptionKey(std: AcurastRuntimeStd | undefined): Promise<void> {
+  const encrypt = std?.signers?.secp256k1?.encrypt;
+  if (typeof encrypt !== "function") return;
+  try {
+    await Promise.resolve(encrypt.call(std?.signers?.secp256k1, SECP256K1_ENCRYPTION_KEY_PRIME_PUBLIC_KEY, "00", "00"));
+  } catch {
+    // Best-effort: identity resolution reports the missing key if priming failed.
+  }
+}
+
+function primeAcurastSecp256k1EncryptionKeyBestEffort(std: AcurastRuntimeStd | undefined): void {
+  const encrypt = std?.signers?.secp256k1?.encrypt;
+  if (typeof encrypt !== "function") return;
+  try {
+    const result = encrypt.call(std?.signers?.secp256k1, SECP256K1_ENCRYPTION_KEY_PRIME_PUBLIC_KEY, "00", "00");
+    if (typeof (result as Promise<string> | undefined)?.catch === "function") {
+      void (result as Promise<string>).catch(() => undefined);
+    }
+  } catch {
+    // Best-effort, as for the p256 key above.
+  }
+}
+
 export async function signAcurastRuntimeMessage(
   options: { std?: AcurastRuntimeStd } = {},
   message: Uint8Array
@@ -345,13 +398,18 @@ export async function signAcurastRuntimeMessage(
 
 export async function decryptAcurastRuntimePayload(
   options: { std?: AcurastRuntimeStd } = {},
-  encrypted: { senderPublicKey: string; saltHex: string; ciphertextHex: string }
+  encrypted: AcurastEncryptedRuntimePayload
 ): Promise<Uint8Array> {
   const std = resolveRuntimeStd(options.std);
-  const decrypt = std?.signers?.secp256r1?.decrypt;
-  if (typeof decrypt !== "function") throw new Error("Acurast secp256r1 decrypt is required for Lockbox bootstrap");
+  const curveName = encrypted.curveName ?? "secp256r1";
+  if (curveName !== "secp256r1" && curveName !== "secp256k1") {
+    throw new Error("Lockbox encrypted payload has an unsupported curve");
+  }
+  const signer = std?.signers?.[curveName];
+  const decrypt = signer?.decrypt;
+  if (typeof decrypt !== "function") throw new Error(`Acurast ${curveName} decrypt is required for Lockbox bootstrap`);
   const plaintextHex = await Promise.resolve(decrypt.call(
-    std?.signers?.secp256r1,
+    signer,
     encrypted.senderPublicKey,
     encrypted.saltHex,
     encrypted.ciphertextHex
@@ -371,12 +429,12 @@ export function acurastEd25519PublicKey(std: AcurastRuntimeStd | undefined = res
   return hex;
 }
 
-function encryptionKeyFromStd(std: AcurastRuntimeStd | undefined): string | undefined {
+function encryptionKeyFromStd(std: AcurastRuntimeStd | undefined, names: readonly string[]): string | undefined {
   const keys = safeCall(() => std?.job?.getEncryptionKeys?.());
   if (!keys) return undefined;
   const parsed = typeof keys === "string" ? parseJsonOrUndefined(keys) : keys;
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-  for (const name of ["p256", "secp256r1", "secp256r1Encryption", "encP256"]) {
+  for (const name of names) {
     const value = (parsed as Record<string, unknown>)[name];
     if (typeof value === "string" && value.length > 0) return value;
     if (value instanceof Uint8Array) return Buffer.from(value).toString("hex");
