@@ -1,0 +1,96 @@
+{
+  "format": "liskov-state-wrapped-dek-v1",
+  "source": "crates/slipway-crypto/vectors/generate-state-snapshot.mjs (Node built-in crypto)",
+  "contract": "docs/contracts/state-snapshot-format.md",
+  "grantReplay": "vectors/grant.json reproduced before writing",
+  "dekHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "binding": {
+    "org": "org_01j9vector0org000000001",
+    "application": "app_01j9vector0application01",
+    "lineage": "stl_01j9vector0lineage0000001",
+    "dekVersion": 7
+  },
+  "wrappedPlaintextUtf8": "{\"v\":1,\"org\":\"org_01j9vector0org000000001\",\"application\":\"app_01j9vector0application01\",\"lineage\":\"stl_01j9vector0lineage0000001\",\"dekVersion\":7,\"dek\":\"000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f\"}",
+  "cases": [
+    {
+      "name": "lockbox-compressed-recipient",
+      "recipientPrivHex": "5555555555555555555555555555555555555555555555555555555555555555",
+      "recipientPubHex": "0257e977f6db7e33c3fe7acf2842ed987009caf56d458682fca447b7d3d762ab34",
+      "senderPrivHex": "6666666666666666666666666666666666666666666666666666666666666666",
+      "saltHex": "101112131415161718191a1b1c1d1e1f",
+      "ivHex": "d0d1d2d3d4d5d6d7d8d9dadb",
+      "wrapped": {
+        "recipientKind": "lockbox",
+        "recipientKeyId": "a0bcd081e7395af27a185ef1fc8d5a3c0b9ba43259d48207773d0d57fe5dddd7",
+        "dekVersion": 7,
+        "grant": {
+          "version": "acurast-p256-hkdf-aes-256-gcm-v1",
+          "curveName": "secp256r1",
+          "senderPublicKey": "030bbbc5e8bc84bd33d1d3ce03ffac9a747f4c1993fddb2ec93a4116a86f022a77",
+          "saltHex": "101112131415161718191a1b1c1d1e1f",
+          "ciphertextHex": "d0d1d2d3d4d5d6d7d8d9dadb7ebcede1a36852f561ea6a69461bb2b0ce7f1de62ad45995e88d0e67cddbd3bb426a2f7795547fe61e42b1f66efc1fd7985927022fde3fc895ac9eea1701746e4671454313644778d7f17e68b753d47bfa33825a06b7b96f5113e13f9d30a89ef9c642b9becb746d8763bbdabaa258cdd8f79bda76905c7250c40ebf947740800c4ef2f10e348de4314a3ef82eb6cb72e1b54df86bfe5b7e039721bdc7c9b36ea44b6c5718eaba5f65243beb70d5b2c4bb872f898036b7c8808bf57314d3183fe7fff19943bbde16bb94ccecefc8fc4795b6ed01f671052aa58edbaa19f36eec4cab32d7efbda1b0f778"
+        }
+      }
+    },
+    {
+      "name": "job-uncompressed-recipient",
+      "recipientPrivHex": "7777777777777777777777777777777777777777777777777777777777777777",
+      "recipientPubHex": "04e45054eb5b1abd976650f7f395bf51d0d8dd193e0174e7a14a1c8c127fbdf2dbaefe3293b0445f3f92bf8e108202e009415c899499620c71b7f6df9021132c9c",
+      "senderPrivHex": "8888888888888888888888888888888888888888888888888888888888888888",
+      "saltHex": "202122232425262728292a2b2c2d2e2f",
+      "ivHex": "e0e1e2e3e4e5e6e7e8e9eaeb",
+      "wrapped": {
+        "recipientKind": "job",
+        "recipientKeyId": "6ed6321b76e5d0e1fc31f2ba67e771b8da901c6b685c8340d4d4a9b7df204023",
+        "dekVersion": 7,
+        "grant": {
+          "version": "acurast-p256-hkdf-aes-256-gcm-v1",
+          "curveName": "secp256r1",
+          "senderPublicKey": "037f22411445de76e65c4a6f8089e84514a5e1075c05acee891106eaf375a577d1",
+          "saltHex": "202122232425262728292a2b2c2d2e2f",
+          "ciphertextHex": "e0e1e2e3e4e5e6e7e8e9eaeb7004f520c9d5132882ee85b69a1b36175de8066aaa49b637f4605c1fb85dfefd11a589113a02cdb9170146c9365018f5b012befae7e0abf752da0d648799402ae668b22323072dd02b40fcefabb4b9f6910bece08bb3310179b86c45711bbdf55513537e859f91d6bf24b8b52549313e0322c5c7d551ed064b60218a67293b8cb3c2cd10309d30d02de24f9a9dc936ac21c62905425171a9b9b4f7b41f2df4c514b40b7204b1f194dfcea907bfbb740710a6203182bab6a19646c0028df2917f7cfd05051cec8685eff0d908cea58f81b047ac766cc5f256a5429fa001e74e8bc31479ecefd88fe76734"
+        }
+      }
+    },
+    {
+      "name": "customer-compressed-recipient",
+      "recipientPrivHex": "9999999999999999999999999999999999999999999999999999999999999999",
+      "recipientPubHex": "03ddc275d62301b73434fbaf9def3c42c4fd58cf9f6911c1dff33557674ba0d946",
+      "senderPrivHex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "saltHex": "303132333435363738393a3b3c3d3e3f",
+      "ivHex": "f0f1f2f3f4f5f6f7f8f9fafb",
+      "wrapped": {
+        "recipientKind": "customer",
+        "recipientKeyId": "6708edae5791274136fe3d7a81e73881f6fd2bcd9d4f33a0f3d49455f60031d4",
+        "dekVersion": 7,
+        "grant": {
+          "version": "acurast-p256-hkdf-aes-256-gcm-v1",
+          "curveName": "secp256r1",
+          "senderPublicKey": "0238014c603c89da9712426320ee53a94c795dda3b90bb5b0791ae8f5db486b7db",
+          "saltHex": "303132333435363738393a3b3c3d3e3f",
+          "ciphertextHex": "f0f1f2f3f4f5f6f7f8f9fafb141c9ed0296f63a8a80332b54fd27832b25b935e75c1f4fa87d64b88ee017f6c52284a976d4a3eda68feb4e4ce33e9bfadcc2a0224ba9506e6ac68b54db96ca5320433c9070d487d1dc003ec3830a8526e666e4205f8f482cbbffd65ee4ff6ee9f4cc05bfa5495fdb499e3d468248eb19a9b268d1f5af57065e214164be13c81cefb74690dbc1bf91a4b011e2f0f91e823d1d07c22d9d6779b1966088289b58ccae3cf5002ed3eb1551d16933c07df579a58706a407ccd631e53bf0ae4c39d2bdfd78cbd821b98967188f323f533c389dcc5de4a957add471c38dd33f2c9faf28861e34d578353212229"
+        }
+      }
+    },
+    {
+      "name": "broker-share-compressed-recipient",
+      "recipientPrivHex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "recipientPubHex": "02760a06c858dc17e5c536de811f7107bfa24d4fee39d64afd9158eebaab3cf25b",
+      "senderPrivHex": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "saltHex": "404142434445464748494a4b4c4d4e4f",
+      "ivHex": "000102030405060708090a0b",
+      "wrapped": {
+        "recipientKind": "broker_share",
+        "recipientKeyId": "c75745b0934e11f5ec1781cae4eb1d38586620c4c22abdb36bc225de3aac416d",
+        "dekVersion": 7,
+        "grant": {
+          "version": "acurast-p256-hkdf-aes-256-gcm-v1",
+          "curveName": "secp256r1",
+          "senderPublicKey": "0327b81f37b6f3b008875da2d1e9f56b5712a7490033df14f4513c84e978c5bf91",
+          "saltHex": "404142434445464748494a4b4c4d4e4f",
+          "ciphertextHex": "000102030405060708090a0bf635a70763cfb587d45280525c87d3d2bb14014fd33267e6d99eea358686bf2adbbd61959958aa665122dd904ea9f451a2acf2c56a7c7e34f9db6793fd26f7a13c06fc4d564fc979710d91a7933e50309efdc97fd3833e8f9d62e299e07eda326fc14cb73be418b2e4d76493ee50c55e468bd14d289805af555e66e343e205373545119f0b22770408932769c8c21abc024c776c3a3c99022e49773f39f1da3ef2c33ce6ec92b143f1a80adb432178a7a74f83be3358487b61d40389f7f895e41fa4b4c4655f61471d76323405a50fa0a6e32b8018eeb2615ec3a13a5e830fb83e5e38e42e1ab07fa113"
+        }
+      }
+    }
+  ]
+}
