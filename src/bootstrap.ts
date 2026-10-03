@@ -197,7 +197,6 @@ export function liskovSignedBootstrapUrls(options: LiskovSignedBootstrapConfig =
   return {
     coreUrl: options.coreUrl ??
       getRuntimeEnvValue("PROOF_LISKOV_CORE_URL", options) ??
-      getRuntimeEnvValue("PROOF_SLIPWAY_URL", options) ??
       DEFAULT_LISKOV_CORE_URL,
     secretsUrl: options.secretsUrl ??
       getRuntimeEnvValue("PROOF_LISKOV_SECRETS_URL", options) ??

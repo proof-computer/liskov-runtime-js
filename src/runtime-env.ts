@@ -127,8 +127,8 @@ export interface SlipwayRuntimeEnvRefreshHandle {
 }
 
 export function readSlipwayRuntimeEnvConfig(options: RuntimeEnvLookupOptions = {}): SlipwayRuntimeEnvConfig | undefined {
-  // BKLG-20260829-m8kd step 1: prefer LISKOV_BOOTSTRAP, fall back to the legacy
-  // PROOF_SLIPWAY_BOOTSTRAP name the platform still emits.
+  // BKLG-20260922-91r7: the platform emits only LISKOV_BOOTSTRAP; the legacy
+  // name is no longer read.
   const raw = getFirstRuntimeEnvValue(LISKOV_BOOTSTRAP_ENV_NAMES, options);
   if (!raw) return undefined;
   return slipwayRuntimeEnvConfigFromBootstrap(raw, options);
