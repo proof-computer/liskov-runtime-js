@@ -54,17 +54,18 @@ describe("compiled-in core URL default", () => {
     );
     assert.equal(
       liskovSignedBootstrapUrls({
-        env: {
-          PROOF_LISKOV_CORE_URL: "https://from-liskov-core-url.test",
-          PROOF_SLIPWAY_URL: "https://from-slipway-url.test"
-        }
+        env: { PROOF_LISKOV_CORE_URL: "https://from-liskov-core-url.test" }
       }).coreUrl,
       "https://from-liskov-core-url.test"
     );
+  });
+
+  it("no longer reads PROOF_SLIPWAY_URL", () => {
+    // BKLG-20260922-91r7: the legacy core-URL name alone resolves the default.
     assert.equal(
       liskovSignedBootstrapUrls({ env: { PROOF_SLIPWAY_URL: "https://from-slipway-url.test" } })
         .coreUrl,
-      "https://from-slipway-url.test"
+      DEFAULT_LISKOV_CORE_URL
     );
   });
 
@@ -74,10 +75,11 @@ describe("compiled-in core URL default", () => {
 });
 
 describe("LISKOV_ environment name aliases", () => {
-  // BKLG-20260829-m8kd step 1: readers prefer the LISKOV_ name and fall back to
-  // the legacy one. Nothing emits the new names yet, so this is a no-op.
-  it("orders the bootstrap names new-first", () => {
-    assert.deepEqual(LISKOV_BOOTSTRAP_ENV_NAMES, ["LISKOV_BOOTSTRAP", "PROOF_SLIPWAY_BOOTSTRAP"]);
+  // BKLG-20260922-91r7: the public bootstrap is read only as LISKOV_BOOTSTRAP.
+  // The Lockbox reader still prefers the LISKOV_ name and falls back to the
+  // legacy one.
+  it("reads the bootstrap only as LISKOV_BOOTSTRAP and orders the lockbox names new-first", () => {
+    assert.deepEqual(LISKOV_BOOTSTRAP_ENV_NAMES, ["LISKOV_BOOTSTRAP"]);
     assert.deepEqual(LOCKBOX_BOOTSTRAP_ENV_NAMES, [
       "LISKOV_LOCKBOX_BOOTSTRAP",
       "PROOF_LOCKBOX_BOOTSTRAP"
@@ -100,11 +102,11 @@ describe("LISKOV_ environment name aliases", () => {
     assert.equal(config?.slipwayUrl, "https://new.test");
   });
 
-  it("still reads the legacy bootstrap name on its own", () => {
+  it("ignores the legacy bootstrap name", () => {
     const config = readSlipwayRuntimeEnvConfig({
       env: { [LEGACY_LISKOV_BOOTSTRAP_ENV]: slipwayBootstrap("https://legacy.test") }
     });
-    assert.equal(config?.slipwayUrl, "https://legacy.test");
+    assert.equal(config, undefined);
     assert.equal(readSlipwayRuntimeEnvConfig({ env: {} }), undefined);
   });
 

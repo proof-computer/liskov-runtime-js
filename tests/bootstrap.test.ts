@@ -29,7 +29,7 @@ const APPLICATION_UID = "app-0123456789abcdef0123456789abcdef";
 describe("top-level Slipway runtime bootstrap", () => {
   it("loads Slipway runtime env before Lockbox secrets and returns a refresh handle", async () => {
     const env: Record<string, string | undefined> = {
-      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+      LISKOV_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://slipway.test",
         a: "generic-worker",
@@ -78,7 +78,7 @@ describe("top-level Slipway runtime bootstrap", () => {
 
   it("does not implicitly allowlist bootstrap hosts before network requests", async () => {
     const env: Record<string, string | undefined> = {
-      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+      LISKOV_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://slipway.test",
         a: "generic-worker",
@@ -130,7 +130,7 @@ describe("top-level Slipway runtime bootstrap", () => {
 
   it("does not call Acurast hostname allowlisting when it is present", async () => {
     const env: Record<string, string | undefined> = {
-      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+      LISKOV_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://slipway.test",
         a: "generic-worker",
@@ -408,7 +408,7 @@ describe("top-level Slipway runtime bootstrap", () => {
 
   it("replaces legacy handoff configs with UID-bound signed bootstrap authority", async () => {
     const env: Record<string, string | undefined> = {
-      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+      LISKOV_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://legacy-slipway.test",
         a: "generic-worker",
@@ -967,7 +967,7 @@ describe("top-level Slipway runtime bootstrap", () => {
   it("skips Lockbox when no Lockbox bootstrap is present", async () => {
     const env: Record<string, string | undefined> = {
       HOME: "/home/runtime",
-      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+      LISKOV_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://slipway.test",
         a: "generic-worker",
@@ -1597,7 +1597,7 @@ describe("top-level Slipway runtime bootstrap", () => {
 
   it("stops scheduled refresh timers", async () => {
     const env: Record<string, string | undefined> = {
-      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+      LISKOV_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://slipway.test",
         a: "generic-worker",
@@ -1634,7 +1634,7 @@ describe("top-level Slipway runtime bootstrap", () => {
 
   it("posts best-effort runtime diagnostics when the Slipway bootstrap carries a token", async () => {
     const env: Record<string, string | undefined> = {
-      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+      LISKOV_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://slipway.test",
         a: "generic-worker",
@@ -1666,7 +1666,7 @@ describe("top-level Slipway runtime bootstrap", () => {
 
   it("starts and stops configurable runtime health diagnostics", async () => {
     const env: Record<string, string | undefined> = {
-      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+      LISKOV_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://slipway.test",
         a: "generic-worker",
@@ -1722,7 +1722,7 @@ describe("top-level Slipway runtime bootstrap", () => {
 
   it("disables runtime health when interval is zero", async () => {
     const env: Record<string, string | undefined> = {
-      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+      LISKOV_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://slipway.test",
         a: "generic-worker",
@@ -1755,7 +1755,7 @@ describe("top-level Slipway runtime bootstrap", () => {
 
   it("bounds remote diagnostic sends with a timeout", async () => {
     const env: Record<string, string | undefined> = {
-      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+      LISKOV_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://slipway.test",
         a: "generic-worker",
@@ -1789,7 +1789,7 @@ describe("top-level Slipway runtime bootstrap", () => {
 
   it("bounds local diagnostic callbacks so they cannot block runtime env handoff", async () => {
     const env: Record<string, string | undefined> = {
-      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+      LISKOV_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://slipway.test",
         a: "generic-worker",
@@ -1823,7 +1823,7 @@ describe("top-level Slipway runtime bootstrap", () => {
 
   it("backs off remote diagnostics after a failed send and resumes after the backoff window", async () => {
     const env: Record<string, string | undefined> = {
-      PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+      LISKOV_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://slipway.test",
         a: "generic-worker",

@@ -226,8 +226,8 @@ absent.
 ## Liskov Runtime Env
 
 Liskov jobs receive compact public bootstrap config through
-`LISKOV_BOOTSTRAP`, falling back to the legacy `PROOF_SLIPWAY_BOOTSTRAP` name
-the platform still emits:
+`LISKOV_BOOTSTRAP` (the legacy `PROOF_SLIPWAY_BOOTSTRAP` and
+`PROOF_SLIPWAY_URL` names are no longer read):
 
 ```json
 {
@@ -532,7 +532,7 @@ The runtime is designed to be tested without live Acurast spend:
 
 ```ts
 const env: Record<string, string | undefined> = {
-  PROOF_SLIPWAY_BOOTSTRAP: JSON.stringify({
+  LISKOV_BOOTSTRAP: JSON.stringify({
     v: 1,
     u: "https://slipway.test",
     a: "app",

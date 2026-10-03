@@ -22,7 +22,7 @@ describe("Slipway-backed Acurast examples", () => {
     const factoryToken = "bbx_sf_env_secret";
     const dek = generateProofLogEncryptionKey();
     const env: Record<string, string | undefined> = {
-      PROOF_SLIPWAY_BOOTSTRAP: slipwayBootstrap(),
+      LISKOV_BOOTSTRAP: slipwayBootstrap(),
       BLACKBOX_LOG_CONFIG: JSON.stringify({
         factoryToken,
         baseUrl: "https://logging.slipway.proof.computer",
@@ -74,7 +74,7 @@ describe("Slipway-backed Acurast examples", () => {
     const factoryToken = "bbx_sf_fetch_secret";
     const dek = generateProofLogEncryptionKey();
     const env: Record<string, string | undefined> = {
-      PROOF_SLIPWAY_BOOTSTRAP: slipwayBootstrap(),
+      LISKOV_BOOTSTRAP: slipwayBootstrap(),
       BLACKBOX_LOG_CONFIG: JSON.stringify({
         factoryToken,
         baseUrl: "https://logging.slipway.proof.computer",
@@ -129,7 +129,7 @@ describe("Slipway-backed Acurast examples", () => {
     const factoryToken = "bbx_sf_webserver_secret";
     const dek = generateProofLogEncryptionKey();
     const env: Record<string, string | undefined> = {
-      PROOF_SLIPWAY_BOOTSTRAP: slipwayBootstrap(),
+      LISKOV_BOOTSTRAP: slipwayBootstrap(),
       BLACKBOX_LOG_CONFIG: JSON.stringify({
         factoryToken,
         baseUrl: "https://logging.slipway.proof.computer",
