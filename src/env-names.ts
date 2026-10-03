@@ -1,11 +1,11 @@
 /**
  * Canonical names of the Liskov-owned runtime environment contract.
  *
- * Liskov-owned variables are migrating to the `LISKOV_*` prefix
- * (`BKLG-20260829-m8kd`). The platform emits only `LISKOV_BOOTSTRAP`, so the
- * public bootstrap is read under that name alone (`BKLG-20260922-91r7`). The
- * Lockbox reader still prefers the `LISKOV_*` name and falls back to the legacy
- * one for jobs deployed before the rename.
+ * Every Liskov-owned variable a job reads is `LISKOV_*`. Each is read under
+ * its `LISKOV_*` name alone, with no fallback to a retired name:
+ * `LISKOV_BOOTSTRAP` (`BKLG-20260922-91r7`), and `LISKOV_CORE_URL` and
+ * `LISKOV_LOCKBOX_BOOTSTRAP` (`BKLG-20261002-qihk`). `LISKOV_HOME` is in
+ * `home.ts`.
  *
  * `BRIDGE_SOCKET` is deliberately absent: it belongs to the Acurast runtime,
  * not to Liskov, and must never be renamed or aliased.
@@ -24,14 +24,18 @@ export const LEGACY_LISKOV_BOOTSTRAP_ENV = "PROOF_SLIPWAY_BOOTSTRAP";
 /** The names the public bootstrap config is read from. */
 export const LISKOV_BOOTSTRAP_ENV_NAMES: readonly string[] = [LISKOV_BOOTSTRAP_ENV];
 
+/** Overrides the compiled-in `DEFAULT_LISKOV_CORE_URL`. */
+export const LISKOV_CORE_URL_ENV = "LISKOV_CORE_URL";
+
 /** The compact Lockbox secret bootstrap config. */
 export const LOCKBOX_BOOTSTRAP_ENV = "LISKOV_LOCKBOX_BOOTSTRAP";
 
-/** Migration bridge for {@link LOCKBOX_BOOTSTRAP_ENV}. */
+/**
+ * The retired name of {@link LOCKBOX_BOOTSTRAP_ENV}.
+ *
+ * @deprecated No longer read; exported so existing imports compile.
+ */
 export const LEGACY_LOCKBOX_BOOTSTRAP_ENV = "PROOF_LOCKBOX_BOOTSTRAP";
 
-/** Reader preference order for the Lockbox secret bootstrap config. */
-export const LOCKBOX_BOOTSTRAP_ENV_NAMES: readonly string[] = [
-  LOCKBOX_BOOTSTRAP_ENV,
-  LEGACY_LOCKBOX_BOOTSTRAP_ENV
-];
+/** The names the Lockbox secret bootstrap config is read from. */
+export const LOCKBOX_BOOTSTRAP_ENV_NAMES: readonly string[] = [LOCKBOX_BOOTSTRAP_ENV];

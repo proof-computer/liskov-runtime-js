@@ -23,7 +23,7 @@ import {
 } from "../src/index.js";
 
 describe("Lockbox runtime secrets", () => {
-  it("parses compact and expanded bootstrap config", () => {
+  it("parses the compact bootstrap config and ignores the expanded names", () => {
     assert.deepEqual(lockboxRuntimeConfigFromBootstrap(JSON.stringify({
       v: 1,
       u: "https://lockbox.test",
@@ -41,12 +41,11 @@ describe("Lockbox runtime secrets", () => {
       deploymentId: "42",
       requestedSecretIds: ["api-token", "file-config"],
       allowInsecureHttp: false,
-      fileBaseDir: "./secrets",
-      requestTtlMs: undefined,
-      overwriteEnv: undefined
+      fileBaseDir: "./secrets"
     });
 
-    assert.deepEqual(readLockboxRuntimeConfig({
+    // BKLG-20261002-qihk: the expanded PROOF_LOCKBOX_* fallback is gone.
+    assert.equal(readLockboxRuntimeConfig({
       env: {
         PROOF_LOCKBOX_URL: "https://lockbox.test",
         PROOF_LOCKBOX_APPLICATION_ID: "generic-worker",
@@ -55,7 +54,38 @@ describe("Lockbox runtime secrets", () => {
         PROOF_LOCKBOX_DEPLOYMENT_ID: "42",
         PROOF_LOCKBOX_REQUESTED_SECRET_IDS: "api-token"
       }
-    })?.requestedSecretIds, ["api-token"]);
+    }), undefined);
+  });
+
+  it("takes no Lockbox tuning from the environment", () => {
+    // BKLG-20261002-qihk: allowInsecureHttp comes from the compact record only;
+    // the TTL and overwrite knobs are not read.
+    const raw = JSON.stringify({
+      v: 1,
+      u: "https://lockbox.test",
+      a: "generic-worker",
+      g: "grant-1",
+      p: "1".repeat(64),
+      d: "42",
+      s: ["api-token"]
+    });
+    const env = {
+      LISKOV_LOCKBOX_BOOTSTRAP: raw,
+      PROOF_LOCKBOX_ALLOW_INSECURE_HTTP: "true",
+      PROOF_LOCKBOX_REQUEST_TTL_MS: "5",
+      PROOF_LOCKBOX_OVERWRITE_ENV: "true",
+      PROOF_LOCKBOX_FILE_BASE_DIR: "./from-env"
+    };
+    assert.deepEqual(readLockboxRuntimeConfig({ env }), readLockboxRuntimeConfig({ env: { LISKOV_LOCKBOX_BOOTSTRAP: raw } }));
+    const config = readLockboxRuntimeConfig({ env });
+    assert.equal(config?.allowInsecureHttp, false);
+    assert.equal(config?.requestTtlMs, undefined);
+    assert.equal(config?.overwriteEnv, undefined);
+    assert.equal(config?.fileBaseDir, undefined);
+    assert.equal(
+      lockboxRuntimeConfigFromBootstrap(JSON.stringify({ ...JSON.parse(raw), allowInsecureHttp: true }), { env }).allowInsecureHttp,
+      true
+    );
   });
 
   it("signs canonical requests with runtime identity", async () => {

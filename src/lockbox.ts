@@ -6,10 +6,6 @@ import type { RuntimeIdentityProvider } from "./acurast.js";
 import { LOCKBOX_BOOTSTRAP_ENV, LOCKBOX_BOOTSTRAP_ENV_NAMES } from "./env-names.js";
 import {
   getFirstRuntimeEnvValue,
-  getRuntimeEnvValue,
-  optionalBooleanEnv,
-  optionalIntegerEnv,
-  requiredRuntimeEnvValue,
   type RuntimeEnvLookupOptions
 } from "./env.js";
 import {
@@ -217,32 +213,16 @@ export interface LockboxRuntimeLoadResult {
 }
 
 export function readLockboxRuntimeConfig(options: RuntimeEnvLookupOptions = {}): LockboxRuntimeSecretConfig | undefined {
-  // BKLG-20260829-m8kd step 1: prefer LISKOV_LOCKBOX_BOOTSTRAP, fall back to the
-  // legacy PROOF_LOCKBOX_BOOTSTRAP name the platform still emits.
+  // BKLG-20261002-qihk: only the compact LISKOV_LOCKBOX_BOOTSTRAP is read; the
+  // legacy name and the expanded per-field names are not.
   const compact = getFirstRuntimeEnvValue(LOCKBOX_BOOTSTRAP_ENV_NAMES, options);
-  if (compact !== undefined) return lockboxRuntimeConfigFromBootstrap(compact, options);
-  const lockboxUrl = getRuntimeEnvValue("PROOF_LOCKBOX_URL", options);
-  if (!lockboxUrl) return undefined;
-  const secretIds = getRuntimeEnvValue("PROOF_LOCKBOX_SECRET_IDS", options) ??
-    getRuntimeEnvValue("PROOF_LOCKBOX_REQUESTED_SECRET_IDS", options);
-  return {
-    lockboxUrl,
-    applicationUid: getRuntimeEnvValue("LISKOV_APPLICATION_UID", options),
-    applicationId: requiredRuntimeEnvValue("PROOF_LOCKBOX_APPLICATION_ID", options),
-    grantId: requiredRuntimeEnvValue("PROOF_LOCKBOX_GRANT_ID", options),
-    policyDigest: normalizePolicyDigest(requiredRuntimeEnvValue("PROOF_LOCKBOX_POLICY_DIGEST", options)),
-    deploymentId: requiredRuntimeEnvValue("PROOF_LOCKBOX_DEPLOYMENT_ID", options),
-    requestedSecretIds: parseStringArrayOrCsv(secretIds, "PROOF_LOCKBOX_SECRET_IDS"),
-    allowInsecureHttp: optionalBooleanEnv("PROOF_LOCKBOX_ALLOW_INSECURE_HTTP", options),
-    fileBaseDir: getRuntimeEnvValue("PROOF_LOCKBOX_FILE_BASE_DIR", options),
-    requestTtlMs: optionalIntegerEnv("PROOF_LOCKBOX_REQUEST_TTL_MS", options),
-    overwriteEnv: optionalBooleanEnv("PROOF_LOCKBOX_OVERWRITE_ENV", options)
-  };
+  if (compact === undefined) return undefined;
+  return lockboxRuntimeConfigFromBootstrap(compact, options);
 }
 
 export function lockboxRuntimeConfigFromBootstrap(
   rawBootstrap: string,
-  options: RuntimeEnvLookupOptions = {}
+  _options: RuntimeEnvLookupOptions = {}
 ): LockboxRuntimeSecretConfig {
   const record = asRecord(parseJson(rawBootstrap, LOCKBOX_BOOTSTRAP_ENV), LOCKBOX_BOOTSTRAP_ENV);
   const secretIds = record.s ?? record.secretIds ?? record.requestedSecretIds;
@@ -256,10 +236,8 @@ export function lockboxRuntimeConfigFromBootstrap(
     policyDigest: normalizePolicyDigest(requiredStringAlias(record, "p", "policyDigest")),
     deploymentId: requiredStringAlias(record, "d", "deploymentId"),
     requestedSecretIds: parseStringArrayOrCsv(secretIds, `${LOCKBOX_BOOTSTRAP_ENV}.s`),
-    allowInsecureHttp: Boolean(optionalBooleanEnv("PROOF_LOCKBOX_ALLOW_INSECURE_HTTP", options) ?? record.allowInsecureHttp),
-    fileBaseDir: typeof record.f === "string" ? record.f : typeof record.fileBaseDir === "string" ? record.fileBaseDir : undefined,
-    requestTtlMs: optionalIntegerEnv("PROOF_LOCKBOX_REQUEST_TTL_MS", options),
-    overwriteEnv: optionalBooleanEnv("PROOF_LOCKBOX_OVERWRITE_ENV", options)
+    allowInsecureHttp: Boolean(record.allowInsecureHttp),
+    fileBaseDir: typeof record.f === "string" ? record.f : typeof record.fileBaseDir === "string" ? record.fileBaseDir : undefined
   };
 }
 
