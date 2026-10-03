@@ -170,7 +170,7 @@ Common options:
 
 - `appId`, `component`, `revision`: metadata added to status, diagnostics, and
   logging records where available.
-- `home`: explicit state root. Defaults to `SLIPWAY_HOME`, then
+- `home`: explicit state root. Defaults to `LISKOV_HOME`, then
   `$HOME/.slipway`, then `/tmp/slipway`.
 - `secrets.mode`: `required`, `background`, or `off`.
 - `secrets.retry`: background retry budget. Defaults are
@@ -259,11 +259,14 @@ background secrets are still pending, then refreshes logging. The current v0
 periodic runtime-env refresh is internal; Applications should use
 `refreshNow()` when they need an explicit reload.
 
+The signed runtime bootstrap is sent to `/api/jobs/runtime-bootstrap` on the
+core URL, compiled in as `https://runtime.liskov.proof.computer`;
+`LISKOV_CORE_URL` overrides the compiled-in core URL.
+
 ## Secrets
 
 Managed secrets are a built-in Liskov runtime capability. Jobs receive compact
-secret bootstrap config through `LISKOV_LOCKBOX_BOOTSTRAP`, falling back to the
-legacy `PROOF_LOCKBOX_BOOTSTRAP` name:
+secret bootstrap config through `LISKOV_LOCKBOX_BOOTSTRAP`:
 
 ```json
 {
@@ -277,11 +280,10 @@ legacy `PROOF_LOCKBOX_BOOTSTRAP` name:
 }
 ```
 
-Legacy expanded `PROOF_LOCKBOX_*` values remain supported for older jobs, but
-compact bootstrap is the preferred Acurast shape. Lockbox is the internal name
-of the managed-secrets service; it survives only in compatibility identifiers
-such as these environment names and the diagnostic stage ids below, which
-Applications read or set but never need to learn as a product.
+Lockbox is the internal name of the managed-secrets service; it survives only
+in compatibility identifiers such as this environment name and the diagnostic
+stage ids below, which Applications read or set but never need to learn as a
+product.
 
 ### Required
 
@@ -330,14 +332,14 @@ bootstrap values.
 
 Env secrets are installed into runtime env by name. An authenticated signed
 bootstrap is authoritative for its current job and replaces ambient values
-left by a reused runtime. Legacy env-provided bootstrap keeps existing values
-unless `PROOF_LOCKBOX_OVERWRITE_ENV=true` is set. When a signed grant owns
-`blackbox-log-config`, logging buffers until that current config is installed;
-it never attaches an older job's ambient sink config.
+left by a reused runtime. An env-delivered bootstrap keeps existing values.
+When a signed grant owns `blackbox-log-config`, logging buffers until that
+current config is installed; it never attaches an older job's ambient sink
+config.
 
-File secrets require `PROOF_LOCKBOX_FILE_BASE_DIR` or the compact bootstrap
-file-base field. File targets are written below that directory with mode
-`0600`; path traversal outside the base directory is rejected.
+File secrets require the compact bootstrap's file-base field, `f`. File
+targets are written below that directory with mode `0600`; path traversal
+outside the base directory is rejected.
 
 ### Response Encryption Key
 
@@ -397,7 +399,7 @@ Both shapes can be supplied as `BLACKBOX_LOG_CONFIG` JSON or expanded
 posted batches contain no plaintext log messages. Disk spool state defaults to:
 
 ```text
-$SLIPWAY_HOME/logging/spool
+$LISKOV_HOME/logging/spool
 ```
 
 Every config defaults to the `hkdf-sha256-ed25519-v1` writer derivation; newly

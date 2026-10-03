@@ -36,7 +36,7 @@ describe("top-level Slipway runtime bootstrap", () => {
         p: "1".repeat(64),
         d: "42"
       }),
-      PROOF_LOCKBOX_BOOTSTRAP: JSON.stringify({
+      LISKOV_LOCKBOX_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://lockbox.test",
         a: "generic-worker",
@@ -85,7 +85,7 @@ describe("top-level Slipway runtime bootstrap", () => {
         p: "1".repeat(64),
         d: "42"
       }),
-      PROOF_LOCKBOX_BOOTSTRAP: JSON.stringify({
+      LISKOV_LOCKBOX_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://lockbox.test",
         a: "generic-worker",
@@ -415,7 +415,7 @@ describe("top-level Slipway runtime bootstrap", () => {
         p: "1".repeat(64),
         d: "42"
       }),
-      PROOF_LOCKBOX_BOOTSTRAP: JSON.stringify({
+      LISKOV_LOCKBOX_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://legacy-lockbox.test",
         a: "generic-worker",
@@ -1006,7 +1006,7 @@ describe("top-level Slipway runtime bootstrap", () => {
 
   it("fails closed when required Lockbox secrets are rejected", async () => {
     const env: Record<string, string | undefined> = {
-      PROOF_LOCKBOX_BOOTSTRAP: JSON.stringify({
+      LISKOV_LOCKBOX_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://lockbox.test",
         a: "generic-worker",
@@ -1071,7 +1071,7 @@ describe("top-level Slipway runtime bootstrap", () => {
       }
     ]);
     const env: Record<string, string | undefined> = {
-      PROOF_LOCKBOX_BOOTSTRAP: JSON.stringify({
+      LISKOV_LOCKBOX_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://lockbox.test",
         a: "generic-worker",
@@ -1152,7 +1152,7 @@ describe("top-level Slipway runtime bootstrap", () => {
 
   it("keeps background secret failure non-blocking after retry exhaustion", async () => {
     const env: Record<string, string | undefined> = {
-      PROOF_LOCKBOX_BOOTSTRAP: JSON.stringify({
+      LISKOV_LOCKBOX_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://lockbox.test",
         a: "generic-worker",
@@ -1317,7 +1317,7 @@ describe("top-level Slipway runtime bootstrap", () => {
 
   it("stops scheduled background secret retries", async () => {
     const env: Record<string, string | undefined> = {
-      PROOF_LOCKBOX_BOOTSTRAP: JSON.stringify({
+      LISKOV_LOCKBOX_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://lockbox.test",
         a: "generic-worker",
@@ -1355,10 +1355,10 @@ describe("top-level Slipway runtime bootstrap", () => {
     assert.equal(secretRequests, 0);
   });
 
-  it("uses SLIPWAY_HOME and attaches env-delivered factory-token logging", async () => {
+  it("uses LISKOV_HOME and attaches env-delivered factory-token logging", async () => {
     const dek = generateProofLogEncryptionKey();
     const env: Record<string, string | undefined> = {
-      SLIPWAY_HOME: "/runtime/slipway",
+      LISKOV_HOME: "/runtime/slipway",
       BLACKBOX_LOG_CONFIG: JSON.stringify({
         factoryToken: "bbx_sf_test_secret",
         baseUrl: "https://logging.slipway.proof.computer",
@@ -1432,7 +1432,7 @@ describe("top-level Slipway runtime bootstrap", () => {
       })
     }]);
     const env: Record<string, string | undefined> = {
-      PROOF_LOCKBOX_BOOTSTRAP: JSON.stringify({
+      LISKOV_LOCKBOX_BOOTSTRAP: JSON.stringify({
         v: 1,
         u: "https://lockbox.test",
         a: "generic-worker",

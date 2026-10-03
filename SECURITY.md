@@ -27,7 +27,7 @@ Use this checklist before cutting a public
   response.
 - File-target secret writes must stay under the configured base directory and
   use mode `0600`.
-- Runtime and CLI state must live under `SLIPWAY_HOME`, defaulting to
+- Runtime and CLI state must live under `LISKOV_HOME`, defaulting to
   `~/.slipway` when a home directory is available. Logging- or secrets-specific
   home directories must not be promoted as the user-facing model.
 

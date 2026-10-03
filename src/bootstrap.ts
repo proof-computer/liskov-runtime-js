@@ -3,10 +3,9 @@ import { Buffer } from "node:buffer";
 import type { RuntimeIdentityProvider } from "./acurast.js";
 import {
   getRuntimeEnvValue,
-  optionalBooleanEnv,
-  optionalIntegerEnv,
   type RuntimeEnvLookupOptions
 } from "./env.js";
+import { LISKOV_CORE_URL_ENV } from "./env-names.js";
 import type { LockboxRuntimeSecretConfig } from "./lockbox.js";
 import type { SlipwayRuntimeEnvConfig } from "./runtime-env.js";
 import {
@@ -196,22 +195,18 @@ export function liskovSignedBootstrapUrls(options: LiskovSignedBootstrapConfig =
 } {
   return {
     coreUrl: options.coreUrl ??
-      getRuntimeEnvValue("PROOF_LISKOV_CORE_URL", options) ??
+      getRuntimeEnvValue(LISKOV_CORE_URL_ENV, options) ??
       DEFAULT_LISKOV_CORE_URL,
-    secretsUrl: options.secretsUrl ??
-      getRuntimeEnvValue("PROOF_LISKOV_SECRETS_URL", options) ??
-      DEFAULT_LISKOV_SECRETS_URL
+    secretsUrl: options.secretsUrl ?? DEFAULT_LISKOV_SECRETS_URL
   };
 }
 
 export function liskovSignedBootstrapAllowInsecureHttp(options: LiskovSignedBootstrapConfig = {}): boolean | undefined {
-  return options.allowInsecureHttp ?? optionalBooleanEnv("PROOF_LISKOV_BOOTSTRAP_ALLOW_INSECURE_HTTP", options);
+  return options.allowInsecureHttp;
 }
 
 export function liskovSignedBootstrapRequestTtlMs(options: LiskovSignedBootstrapConfig = {}): number {
-  return options.requestTtlMs ??
-    optionalIntegerEnv("PROOF_LISKOV_BOOTSTRAP_REQUEST_TTL_MS", options) ??
-    DEFAULT_LISKOV_BOOTSTRAP_REQUEST_TTL_MS;
+  return options.requestTtlMs ?? DEFAULT_LISKOV_BOOTSTRAP_REQUEST_TTL_MS;
 }
 
 export function liskovSignedBootstrapRetryOptions(
