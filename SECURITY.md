@@ -67,9 +67,9 @@ Use this checklist before cutting a public
 
 ## Package Artifact
 
-- `package.json` must be public-ready: `private: false`, version `0.3.26`, and
+- `package.json` must be public-ready: `private: false`, a version matching the release tag, and
   repository metadata pointing at `proof-computer/liskov-runtime-js`.
-- The package `files` allowlist must include only `dist`, `README.md`, and
+- The package `files` allowlist must include only `dist`, `LICENSE`, `README.md`, and
   `SECURITY.md`.
 - `npm pack --dry-run --json` must show no source files, tests, local env,
   lockfiles, or generated runtime artifacts.
