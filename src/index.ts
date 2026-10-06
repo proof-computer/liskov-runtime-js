@@ -1474,7 +1474,6 @@ function runtimeBootstrapAttrs(
 ): Record<string, string | number | boolean | null> {
   return {
     hasSlipwayBootstrap: Boolean(slipwayConfig),
-    hasSlipwayDiagnosticsToken: Boolean(slipwayConfig?.diagnosticsToken),
     hasLockboxBootstrap: Boolean(lockboxConfig),
     slipwayBootstrapSource: runtimeEnvSource(LISKOV_BOOTSTRAP_ENV_NAMES, lookup),
     lockboxBootstrapSource: runtimeEnvSource(LOCKBOX_BOOTSTRAP_ENV_NAMES, lookup),

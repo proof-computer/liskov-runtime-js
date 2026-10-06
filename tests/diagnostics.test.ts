@@ -15,7 +15,7 @@ import {
   startSlipwayRuntimeHealth,
   slipwayRuntimeDiagnosticRequestMessage
 } from "../src/diagnostics.js";
-import type { SlipwayRuntimeEnvConfig } from "../src/runtime-env.js";
+import { slipwayRuntimeEnvConfigFromBootstrap, type SlipwayRuntimeEnvConfig } from "../src/runtime-env.js";
 
 // ADR-0003 Phase 5b — the cross-repo signature parity anchor. This exact byte string is
 // asserted identically in the Rust test (slipway-executor `runtime_diagnostics.rs`); the
@@ -128,26 +128,10 @@ describe("ADR-0003 5b signed runtime diagnostics", () => {
     assert.equal(signed[0], SIGNED_MESSAGE_GOLDEN);
   });
 
-  it("keeps sending the token and also signs during the accept-both window", async () => {
-    const calls: RecordedCall[] = [];
-    const signed: string[] = [];
-    const emitter = createSlipwayRuntimeDiagnosticEmitter({
-      bootstrap: baseBootstrap({ diagnosticsToken: "srd1_legacy" }),
-      identityProvider: recordingIdentityProvider(signed),
-      fetchImpl: recordingFetch(calls),
-      nowMs: () => FIXED_NOW
-    });
-
-    await emitter.emit({ stage: "runtime.health", status: "info", ok: true });
-
-    assert.equal(calls[0].body.token, "srd1_legacy");
-    assert.equal(calls[0].body.signature, FIXED_SIGNATURE);
-  });
-
-  it("does not send remotely when there is neither a token nor an identity provider", async () => {
+  it("does not send remotely without an identity provider", async () => {
     const calls: RecordedCall[] = [];
     const emitter = createSlipwayRuntimeDiagnosticEmitter({
-      bootstrap: baseBootstrap(),
+      bootstrap: bootstrapCarryingLegacyCheckInField(),
       fetchImpl: recordingFetch(calls),
       nowMs: () => FIXED_NOW
     });
@@ -156,7 +140,30 @@ describe("ADR-0003 5b signed runtime diagnostics", () => {
 
     assert.equal(calls.length, 0);
   });
+
+  it("parses a bootstrap carrying x.t and omits the legacy check-in field", () => {
+    const policyDigest = "ab".repeat(32);
+    assert.deepEqual(bootstrapCarryingLegacyCheckInField(), {
+      slipwayUrl: "https://slipway.test",
+      applicationId: "app-1",
+      policyDigest,
+      deploymentId: "dep-1",
+      runtimeHealth: undefined,
+      allowInsecureHttp: false
+    });
+  });
 });
+
+function bootstrapCarryingLegacyCheckInField(): SlipwayRuntimeEnvConfig {
+  return slipwayRuntimeEnvConfigFromBootstrap(JSON.stringify({
+    v: 1,
+    u: "https://slipway.test",
+    a: "app-1",
+    p: "ab".repeat(32),
+    d: "dep-1",
+    x: { t: "legacy-checkin" }
+  }));
+}
 
 describe("identity-bound v2 terminal diagnostics", () => {
   it("matches the Rust canonical-byte golden and redaction vector", () => {

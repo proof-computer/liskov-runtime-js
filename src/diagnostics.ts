@@ -461,8 +461,7 @@ export function liskovRuntimeDiagnosticV4Message(input: LiskovRuntimeDiagnosticV
 
 function canSendRemoteDiagnostic(options: SlipwayRuntimeDiagnosticEmitterOptions): boolean {
   if (options.coreUrl && options.identityProvider) return true;
-  if (!options.bootstrap) return false;
-  return Boolean(options.bootstrap.diagnosticsToken) || Boolean(options.identityProvider);
+  return Boolean(options.identityProvider) && (Boolean(options.coreUrl) || Boolean(options.bootstrap));
 }
 
 async function sendLocalDiagnostic(
@@ -604,7 +603,6 @@ async function sendSlipwayRuntimeDiagnosticV1(input: SlipwayRuntimeDiagnosticEmi
     applicationId: input.bootstrap.applicationId,
     policyDigest: input.bootstrap.policyDigest,
     deploymentId: input.bootstrap.deploymentId,
-    token: input.bootstrap.diagnosticsToken,
     signature,
     stage: input.diagnostic.stage,
     status: input.diagnostic.status,
