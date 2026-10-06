@@ -37,7 +37,6 @@ export interface SlipwayRuntimeEnvConfig {
   policyDigest: string;
   deploymentId: string;
   runtimeInstanceId?: string;
-  diagnosticsToken?: string;
   runtimeHealth?: SlipwayRuntimeHealthConfig;
   allowInsecureHttp?: boolean;
   requestTtlMs?: number;
@@ -143,7 +142,6 @@ export function slipwayRuntimeEnvConfigFromBootstrap(
     applicationId: requiredStringAlias(record, "a", "applicationId"),
     policyDigest: normalizePolicyDigest(requiredStringAlias(record, "p", "policyDigest")),
     deploymentId: requiredStringAlias(record, "d", "deploymentId"),
-    diagnosticsToken: diagnosticsTokenFromBootstrap(record),
     runtimeHealth: runtimeHealthConfigFromBootstrap(record),
     allowInsecureHttp: Boolean(record.allowInsecureHttp)
   };
@@ -432,12 +430,6 @@ function runtimeEnvResponseDomain(value: unknown):
     return value;
   }
   throw new Error("Slipway runtime env response has an unsupported domain");
-}
-
-function diagnosticsTokenFromBootstrap(record: Record<string, unknown>): string | undefined {
-  const diagnostics = recordOrUndefined(record.x) ?? recordOrUndefined(record.diagnostics);
-  const token = diagnostics?.t ?? diagnostics?.token;
-  return typeof token === "string" && token.length > 0 ? token : undefined;
 }
 
 function runtimeHealthConfigFromBootstrap(record: Record<string, unknown>): SlipwayRuntimeHealthConfig | undefined {
