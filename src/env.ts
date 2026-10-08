@@ -46,8 +46,12 @@ export function getRuntimeEnvValue(name: string, options: RuntimeEnvLookupOption
   const environment = options.environment ?? (globalThis as { environment?: (name: string) => unknown }).environment;
   if (typeof environment === "function") {
     const value = environment(name);
-    if (typeof value === "string" && value.length > 0) return value;
-    if (value !== undefined && value !== null && typeof value !== "object") return String(value);
+    if (typeof value === "string") {
+      if (value.length > 0) return value;
+    } else if (value !== undefined && value !== null && typeof value !== "object") {
+      const text = String(value);
+      if (text.length > 0) return text;
+    }
   }
   return undefined;
 }

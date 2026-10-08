@@ -1,5 +1,7 @@
 import { Buffer } from "node:buffer";
 
+import { createNodeHttpFetch } from "./node-http-fetch.js";
+
 import {
   getFirstRuntimeEnvValue,
   resolveRuntimeStd,
@@ -117,6 +119,37 @@ export function createAcurastHttpPostFetch(options: AcurastHttpPostFetchOptions 
       );
     });
   }) as typeof fetch;
+}
+
+/** True on Acurast's iOS processor, whose Node reports `process.platform === "ios"`. */
+export function isAcurastIosRuntime(platform: string = process.platform): boolean {
+  return platform === "ios";
+}
+
+export interface AcurastRuntimeFetchOptions extends AcurastHttpPostFetchOptions {
+  /** Defaults to `process.platform`. */
+  platform?: string;
+}
+
+/**
+ * The transport a job should use. On iOS, `httpPOST` is deprecated and global
+ * `fetch` fails, so requests go over Node's `http`/`https` modules. Everywhere
+ * else this is the existing choice: the Acurast `httpPOST` adapter, else the
+ * global `fetch`. The choice is by platform, never by retrying on another
+ * transport, so a POST is not sent twice.
+ */
+export function createAcurastRuntimeFetch(options: AcurastRuntimeFetchOptions = {}): typeof fetch | undefined {
+  if (isAcurastIosRuntime(options.platform)) return createNodeHttpFetch();
+  return createAcurastHttpPostFetch({ httpPOST: options.httpPOST }) ?? globalThis.fetch;
+}
+
+/**
+ * The SDK's own default transport when a caller passes no `fetchImpl`: Node's
+ * `http`/`https` on iOS, otherwise the global `fetch` exactly as before.
+ */
+export function defaultRuntimeFetch(platform: string = process.platform): typeof fetch {
+  if (isAcurastIosRuntime(platform)) return createNodeHttpFetch();
+  return globalThis.fetch;
 }
 
 function acurastHttpPostSuccessBody(response: unknown): string {

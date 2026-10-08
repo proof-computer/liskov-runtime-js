@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { installSecretFiles, type SecretFile } from "./secret-files.js";
 import path from "node:path";
 
-import type { RuntimeIdentityProvider } from "./acurast.js";
+import { defaultRuntimeFetch, type RuntimeIdentityProvider } from "./acurast.js";
 import { LOCKBOX_BOOTSTRAP_ENV, LOCKBOX_BOOTSTRAP_ENV_NAMES } from "./env-names.js";
 import {
   getFirstRuntimeEnvValue,
@@ -316,7 +316,7 @@ export function lockboxRuntimeJobSecretRequestMessage(request: LockboxRuntimeJob
 
 export async function loadLockboxRuntimeSecrets(input: LockboxRuntimeLoadOptions): Promise<LockboxRuntimeLoadResult> {
   try {
-    const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+    const fetchImpl = input.fetchImpl ?? defaultRuntimeFetch();
     if (typeof fetchImpl !== "function") throw new Error("fetch is required for Lockbox runtime secrets");
     const request = await buildLockboxRuntimeJobSecretRequest({
       identityProvider: input.identityProvider,

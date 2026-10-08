@@ -7,7 +7,7 @@ import {
   sign as signEd25519
 } from "node:crypto";
 
-import { DEFAULT_JOB_ID_ENV_NAMES, acurastEd25519PublicKey } from "./acurast.js";
+import { DEFAULT_JOB_ID_ENV_NAMES, acurastEd25519PublicKey, defaultRuntimeFetch } from "./acurast.js";
 import { getRuntimeEnvValue, resolveRuntimeStd, type AcurastRuntimeStd } from "./env.js";
 import { resolveSlipwayHome } from "./home.js";
 import { loadDiskSpoolModules, type DiskSpoolModules } from "./blackbox-spool-internal.js";
@@ -261,7 +261,7 @@ export function createBlackboxRemoteLogger(
   const engine = new BlackboxSpoolEngine(config, {
     signer,
     writerPublicKey,
-    fetchImpl: options.fetchImpl ?? fetch,
+    fetchImpl: options.fetchImpl ?? defaultRuntimeFetch(),
     timeoutMs: options.timeoutMs ?? config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     spoolMode: options.spoolMode ?? "auto",
     spoolDir: options.spoolDir ?? config.spoolDir,
