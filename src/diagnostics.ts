@@ -1,4 +1,4 @@
-import type { RuntimeIdentityProvider } from "./acurast.js";
+import { defaultRuntimeFetch, type RuntimeIdentityProvider } from "./acurast.js";
 import type { SlipwayRuntimeEnvConfig } from "./runtime-env.js";
 import {
   assertSecureRuntimeUrl,
@@ -503,7 +503,7 @@ async function sendLiskovRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitte
   diagnostic: SlipwayRuntimeDiagnostic;
   handleControl?: (control: unknown, binding: RuntimeControlBinding) => void;
 }): Promise<void> {
-  const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+  const fetchImpl = input.fetchImpl ?? defaultRuntimeFetch();
   if (typeof fetchImpl !== "function") return;
   const url = new URL("/api/jobs/runtime-diagnostics", input.coreUrl);
   assertSecureRuntimeUrl(url, input.allowInsecureHttp, "Liskov runtime diagnostics");
@@ -571,7 +571,7 @@ async function sendSlipwayRuntimeDiagnosticV1(input: SlipwayRuntimeDiagnosticEmi
   bootstrap: SlipwayRuntimeEnvConfig;
   diagnostic: SlipwayRuntimeDiagnostic;
 }): Promise<void> {
-  const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+  const fetchImpl = input.fetchImpl ?? defaultRuntimeFetch();
   if (typeof fetchImpl !== "function") return;
   const url = new URL("/api/jobs/runtime-diagnostics", input.bootstrap.slipwayUrl);
   assertSecureRuntimeUrl(url, input.bootstrap.allowInsecureHttp, "Slipway runtime diagnostics");

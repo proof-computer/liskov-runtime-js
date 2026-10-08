@@ -23,6 +23,27 @@ describe("runtime env lookup and Acurast adapter", () => {
     assert.equal(getRuntimeEnvValue("FROM_ENVIRONMENT", { env: {}, std, environment }), "environment-FROM_ENVIRONMENT");
   });
 
+  it("treats an empty environment(name) value as unset", () => {
+    const environment = () => "";
+    assert.equal(getRuntimeEnvValue("ACURAST_JOB_ID", { env: {}, environment }), undefined);
+    assert.equal(getRuntimeEnvValue("ANYTHING", { env: {}, std: { env: {} }, environment }), undefined);
+    assert.equal(getRuntimeEnvValue("NUMERIC", { env: {}, environment: () => 0 }), "0");
+  });
+
+  it("falls back to _STD_ identity when iOS environment(name) answers an empty string", () => {
+    // Acurast's iOS processor (2026-10-08): `_STD_.env` is a number, `environment(name)`
+    // answers "" for an unset name, and `_STD_.job.getId()` returns an object.
+    const jobId = { id: 275147, origin: { kind: "Acurast", source: "5c58c1d827db4fc0df06f17cc1e469b96dd86e17e3c2f19d8a7efec218028763" } };
+    const std = {
+      env: 3 as unknown as Record<string, string | undefined>,
+      job: { getId: () => jobId },
+      device: { getAddress: () => "5CQoCvxcnuXCvE7P1oo1KCSnZjaKnE9xZ7kxauTt6dTM4WiZ" }
+    } satisfies AcurastRuntimeStd;
+    const identity = resolveAcurastRuntimeIdentity({ env: {}, std, environment: () => "" });
+    assert.equal(identity.jobId, JSON.stringify(jobId));
+    assert.equal(identity.processorId, "5CQoCvxcnuXCvE7P1oo1KCSnZjaKnE9xZ7kxauTt6dTM4WiZ");
+  });
+
   it("resolves identity, signer, and decryptor from injected Acurast std", async () => {
     const signedPayloads: string[] = [];
     const std: AcurastRuntimeStd = {

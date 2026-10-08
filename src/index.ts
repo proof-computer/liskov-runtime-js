@@ -50,6 +50,7 @@ import {
 import { safeErrorMessage, type RuntimeRandomBytes } from "./shared.js";
 
 export * from "./acurast.js";
+export * from "./node-http-fetch.js";
 export * from "./blackbox-logger.js";
 export * from "./bootstrap.js";
 export * from "./diagnostics.js";

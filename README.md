@@ -41,6 +41,16 @@ adapter unwraps the original 2xx status and JSON before bootstrap, secrets, or
 logging callers see it; ordinary fetch transports and servers that do not
 recognize the opt-in header retain their existing behavior.
 
+The next release runs on Acurast's iOS processor. There `httpPOST` is
+deprecated and the global `fetch` fails, so on `process.platform === "ios"` the
+SDK sends its own requests over Node's `http`/`https` modules
+(`defaultRuntimeFetch()`), and `createAcurastRuntimeFetch()` gives a job the same
+choice: Node's modules on iOS, otherwise the `httpPOST` adapter, else the global
+`fetch`. The choice is by platform, so a request is never sent twice. iOS also
+answers an empty string from `environment(name)` for an unset name; the SDK
+treats an empty value as unset, so the job and processor ids come from
+`_STD_.job.getId()` and `_STD_.device.getAddress()`.
+
 Runtime v0.3.22 adds identity-bound v2 diagnostics and a terminal application
 boundary. `handle.diagnostics.report(...)` sends ordinary signed events, while
 `handle.diagnostics.fatal(...)` is first-call-wins, closes health and logging,

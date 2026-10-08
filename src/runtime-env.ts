@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 
-import type { RuntimeIdentityProvider } from "./acurast.js";
+import { defaultRuntimeFetch, type RuntimeIdentityProvider } from "./acurast.js";
 import { LISKOV_BOOTSTRAP_ENV, LISKOV_BOOTSTRAP_ENV_NAMES } from "./env-names.js";
 import {
   getFirstRuntimeEnvValue,
@@ -216,7 +216,7 @@ export function slipwayRuntimeEnvRequestMessage(request: SlipwayRuntimeEnvUnsign
 
 export async function loadSlipwayRuntimeEnv(input: SlipwayRuntimeEnvLoadOptions): Promise<SlipwayRuntimeEnvLoadResult> {
   try {
-    const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+    const fetchImpl = input.fetchImpl ?? defaultRuntimeFetch();
     if (typeof fetchImpl !== "function") throw new Error("fetch is required for Slipway runtime env bootstrap");
     const identity = await input.identityProvider.resolveIdentity({ requireEncryptionKey: false });
     await emit(input.diagnostics, {

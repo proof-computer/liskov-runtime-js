@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 
-import type { RuntimeIdentityProvider } from "./acurast.js";
+import { defaultRuntimeFetch, type RuntimeIdentityProvider } from "./acurast.js";
 import {
   getRuntimeEnvValue,
   type RuntimeEnvLookupOptions
@@ -309,7 +309,7 @@ export function liskovSecretBootstrapRequestMessage(request: LiskovSecretBootstr
 export async function loadLiskovRuntimeBootstrap(
   input: LiskovSignedBootstrapOptions
 ): Promise<LiskovRuntimeBootstrapLoadResult> {
-  const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+  const fetchImpl = input.fetchImpl ?? defaultRuntimeFetch();
   if (typeof fetchImpl !== "function") throw new Error("fetch is required for Liskov runtime bootstrap");
   const urls = liskovSignedBootstrapUrls(input);
   const allowInsecureHttp = liskovSignedBootstrapAllowInsecureHttp(input);
@@ -358,7 +358,7 @@ export async function loadLiskovRuntimeBootstrap(
 export async function loadLiskovSecretBootstrap(
   input: LiskovSignedBootstrapOptions
 ): Promise<LiskovSecretBootstrapLoadResult> {
-  const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+  const fetchImpl = input.fetchImpl ?? defaultRuntimeFetch();
   if (typeof fetchImpl !== "function") throw new Error("fetch is required for Liskov secret bootstrap");
   const urls = liskovSignedBootstrapUrls(input);
   const allowInsecureHttp = liskovSignedBootstrapAllowInsecureHttp(input);
