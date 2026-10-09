@@ -705,3 +705,35 @@ released.
 
 The change applies from v0.3.34 onward only. Release tags up to and including
 `v0.3.33` remain as they shipped: their `package.json` declares `MIT`.
+
+## Network prober sample
+
+`collectNetworkSample` measures the same bounded network ladder as the Cargo
+runtime against `https://liskov-network-prober.fly.dev`. Use the challenge token
+from the probe's authorization; it is sent as the `t` query parameter. The
+sample runs for at most 30 seconds, with UDP before streaming downloads and
+fixed-length zero uploads, then the prober receipt. Transfers do not retain the
+download body in memory. The URL is pinned; a different `proberUrl` returns
+`invalid_response` evidence.
+
+```ts
+import { collectNetworkSample, networkSampleOutcomes } from "@proof-computer/liskov-runtime";
+
+const networkSample = await collectNetworkSample({
+  token: authorization.challenge,
+  startedAtMs: Date.now()
+});
+const outcomes = networkSampleOutcomes(networkSample);
+```
+
+Collection resolves to the existing `NetworkSampleV1` contract with derived
+metrics. Network failures and unavailable Node modules become failed or
+unreachable steps; HTTP sampling continues when UDP is unavailable. A sample
+without a usable receipt still carries its measured legs at low confidence.
+`networkSampleOutcomes` returns exactly `bandwidth-download`, `bandwidth-upload`
+and `udp-path`, including failed-leg bytes and errors, for coverage admission.
+For offline tests, inject a `NetworkTransport` with `elapsedUs`, `prepare`,
+`udp`, `download`, `upload` and `receipt` methods and optional `close` cleanup.
+The optional `now` function supplies monotonic milliseconds to the default
+transport. This API uses `node:https`, `node:dns/promises` and `node:dgram`;
+it does not require the global `fetch` function.
