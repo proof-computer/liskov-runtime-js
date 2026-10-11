@@ -18,7 +18,7 @@ runtime and provides the default Liskov boot path:
 
 ## Runtime context
 
-The next SDK release exposes a read-only snapshot from signed bootstrap:
+SDK v0.3.38 exposes a read-only snapshot from signed bootstrap:
 
 ```ts
 const runtime = await bootstrapSlipwayRuntime();
@@ -42,7 +42,7 @@ The first supported dependency source is the public GitHub release tag:
 ```json
 {
   "dependencies": {
-    "@proof-computer/liskov-runtime": "github:proof-computer/liskov-runtime-js#v0.3.26"
+    "@proof-computer/liskov-runtime": "github:proof-computer/liskov-runtime-js#v0.3.38"
   }
 }
 ```
