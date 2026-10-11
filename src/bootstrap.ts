@@ -8,6 +8,7 @@ import {
 import { LISKOV_CORE_URL_ENV } from "./env-names.js";
 import type { LockboxRuntimeSecretConfig } from "./lockbox.js";
 import type { SlipwayRuntimeEnvConfig } from "./runtime-env.js";
+import { parseLiskovRuntimeContext, type LiskovRuntimeContext } from "./runtime-context.js";
 import {
   asRecord,
   assertSecureRuntimeUrl,
@@ -79,6 +80,8 @@ export interface LiskovSignedBootstrapOptions extends LiskovSignedBootstrapConfi
   nowMs?: () => number;
   randomBytes?: RuntimeRandomBytes;
   setTimeoutImpl?: typeof setTimeout;
+  /** Optional context was malformed and dropped; no response value is passed. */
+  onInvalidContext?: () => void;
 }
 
 export interface LiskovRuntimeBootstrapUnsignedRequest {
@@ -119,6 +122,7 @@ export interface LiskovRuntimeBootstrapResponse {
   processorId: string;
   runtimeInstanceId?: string;
   slipwayUrl: string;
+  context?: LiskovRuntimeContext;
   runtimeEnv?: {
     enabled?: boolean;
     url?: string;
@@ -329,7 +333,7 @@ export async function loadLiskovRuntimeBootstrap(
       allowInsecureHttp,
       label: "Liskov runtime bootstrap",
       request
-    }));
+    }), { onInvalidContext: input.onInvalidContext });
     return response;
   });
   assertRuntimeBootstrapBinding({ request, response });
@@ -402,7 +406,10 @@ export async function loadLiskovSecretBootstrap(
   };
 }
 
-export function parseLiskovRuntimeBootstrapResponse(value: unknown): LiskovRuntimeBootstrapResponse {
+export function parseLiskovRuntimeBootstrapResponse(
+  value: unknown,
+  options: { onInvalidContext?: () => void } = {}
+): LiskovRuntimeBootstrapResponse {
   const record = asRecord(value, "Liskov runtime bootstrap response");
   const domain = runtimeBootstrapResponseDomain(record.domain);
   if (record.ok !== true) {
@@ -410,6 +417,15 @@ export function parseLiskovRuntimeBootstrapResponse(value: unknown): LiskovRunti
   }
   const runtimeEnv = recordOrUndefined(record.runtimeEnv);
   const secrets = recordOrUndefined(record.secrets);
+  let context: LiskovRuntimeContext | undefined;
+  if (domain === LISKOV_RUNTIME_BOOTSTRAP_RESPONSE_DOMAIN_V2 && record.context !== undefined) {
+    try {
+      context = parseLiskovRuntimeContext(record.context);
+    } catch {
+      // Optional data must not break bootstrap or leak its contents into diagnostics.
+      options.onInvalidContext?.();
+    }
+  }
   return {
     ok: true,
     domain,
@@ -423,6 +439,7 @@ export function parseLiskovRuntimeBootstrapResponse(value: unknown): LiskovRunti
     processorId: requiredString(record, "processorId"),
     runtimeInstanceId: optionalString(record, "runtimeInstanceId"),
     slipwayUrl: requiredString(record, "slipwayUrl"),
+    ...(context === undefined ? {} : { context }),
     runtimeEnv: runtimeEnv === undefined
       ? undefined
       : {

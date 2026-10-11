@@ -1,0 +1,296 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RuntimeContext",
+  "description": "`proof.liskov.runtime-context.v1` — the `context` object on a v2 bootstrap\nresponse.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "type": "string"
+    },
+    "serverTimeMs": {
+      "type": "integer",
+      "format": "int64"
+    },
+    "application": {
+      "$ref": "#/$defs/RuntimeContextApplication"
+    },
+    "deployment": {
+      "$ref": "#/$defs/RuntimeContextDeployment"
+    },
+    "job": {
+      "$ref": "#/$defs/RuntimeContextJob"
+    },
+    "processor": {
+      "$ref": "#/$defs/RuntimeContextProcessor"
+    },
+    "policy": {
+      "$ref": "#/$defs/RuntimeContextPolicy"
+    },
+    "artifact": {
+      "$ref": "#/$defs/RuntimeContextArtifact"
+    },
+    "capabilities": {
+      "$ref": "#/$defs/RuntimeContextCapabilities"
+    },
+    "network": {
+      "$ref": "#/$defs/RuntimeContextNetwork"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "serverTimeMs",
+    "application",
+    "deployment",
+    "job",
+    "processor",
+    "policy",
+    "artifact",
+    "capabilities",
+    "network"
+  ],
+  "$defs": {
+    "RuntimeContextApplication": {
+      "description": "The application this job belongs to. `uid` is the stable `app-…` identity;\n`name` is the slug (`applicationId`).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "uid",
+        "name",
+        "displayName"
+      ]
+    },
+    "RuntimeContextDeployment": {
+      "description": "Deployment identity. `liskovDeploymentId` is Liskov's id; the Acurast id is\npresent only when the bound child carries one.",
+      "type": "object",
+      "properties": {
+        "liskovDeploymentId": {
+          "type": "string"
+        },
+        "acurastDeploymentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "liskovDeploymentId",
+        "acurastDeploymentId"
+      ]
+    },
+    "RuntimeContextJob": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "scheduleEndsAtMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "scheduleEndsAtMs"
+      ]
+    },
+    "RuntimeContextProcessor": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ]
+    },
+    "RuntimeContextPolicy": {
+      "type": "object",
+      "properties": {
+        "digest": {
+          "type": "string"
+        },
+        "versionId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "digest",
+        "versionId"
+      ]
+    },
+    "RuntimeContextArtifact": {
+      "description": "Artifact addresses from the policy record. Both stay `null` when the\nrecord does not carry them.",
+      "type": "object",
+      "properties": {
+        "cid": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "digest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "cid",
+        "digest"
+      ]
+    },
+    "RuntimeContextCapabilities": {
+      "description": "What this launch can do. `ingress` is `false`: no public ingress capability\nexists on the bootstrap facts.",
+      "type": "object",
+      "properties": {
+        "runtimeEnv": {
+          "type": "boolean"
+        },
+        "secrets": {
+          "type": "boolean"
+        },
+        "logging": {
+          "type": "boolean"
+        },
+        "ingress": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "runtimeEnv",
+        "secrets",
+        "logging",
+        "ingress"
+      ]
+    },
+    "RuntimeContextNetwork": {
+      "type": "object",
+      "properties": {
+        "observedWanIp": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "observedAtMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "geolocation": {
+          "$ref": "#/$defs/RuntimeContextGeolocation"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "observedWanIp",
+        "observedAtMs",
+        "geolocation"
+      ]
+    },
+    "RuntimeContextGeolocation": {
+      "description": "IP-derived place. `status` says whether the fields are current. The\ncoordinates and provider-operator fields on the stored observation are not\non this wire.",
+      "type": "object",
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/RuntimeContextGeolocationStatus"
+        },
+        "countryCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "countryName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "city": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "asOfMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
+        "accuracy": {
+          "$ref": "#/$defs/RuntimeContextGeolocationAccuracy"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "countryCode",
+        "countryName",
+        "region",
+        "city",
+        "asOfMs",
+        "accuracy"
+      ]
+    },
+    "RuntimeContextGeolocationStatus": {
+      "description": "Whether the geography may be treated as current.",
+      "type": "string",
+      "enum": [
+        "ready",
+        "pending",
+        "stale",
+        "disabled",
+        "unavailable",
+        "not_observed"
+      ]
+    },
+    "RuntimeContextGeolocationAccuracy": {
+      "description": "The only accuracy this block reports. Geography is derived from the\nobserved WAN IP, never from a device fix.",
+      "type": "string",
+      "enum": [
+        "ip-derived"
+      ]
+    }
+  }
+}

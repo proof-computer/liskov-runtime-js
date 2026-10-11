@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
@@ -16,6 +17,8 @@ import {
   liskovRuntimeBootstrapRequestMessage,
   liskovSecretBootstrapRequestMessage,
   loadLiskovRuntimeBootstrap,
+  parseLiskovRuntimeBootstrapResponse,
+  SlipwayRuntimeNotReadyError,
   lockboxEncryptedPayloadDigest,
   lockboxRuntimeResponseAad,
   type BlackboxLogBatch,
@@ -25,6 +28,156 @@ import {
 
 type LockboxPlaintextSecret = LockboxRuntimeJobSecretPlaintextPayload["secrets"][number];
 const APPLICATION_UID = "app-0123456789abcdef0123456789abcdef";
+const contextBootstrapFixture = JSON.parse(readFileSync(new URL("./fixtures/runtime-bootstrap-context.json", import.meta.url), "utf8"));
+
+describe("runtime context bootstrap", () => {
+  it("parses optional v2 context and tolerates older servers", () => {
+    const parsed = parseLiskovRuntimeBootstrapResponse(contextBootstrapFixture);
+    assert.deepEqual(parsed.context, contextBootstrapFixture.context);
+    const { context: _context, ...older } = contextBootstrapFixture;
+    assert.equal(parseLiskovRuntimeBootstrapResponse(older).context, undefined);
+    const { applicationUid: _uid, ...v1 } = older;
+    assert.equal(parseLiskovRuntimeBootstrapResponse({ ...v1,
+      domain: "proof.liskov.runtime-bootstrap-response.v1" }).context, undefined);
+  });
+
+  it("drops malformed context and records a breadcrumb without passing the value", () => {
+    for (const context of [null, [], { ...contextBootstrapFixture.context, serverTimeMs: "bad" }]) {
+      const breadcrumbs: unknown[][] = [];
+      const parsed = parseLiskovRuntimeBootstrapResponse({ ...contextBootstrapFixture, context }, {
+        onInvalidContext: (...args) => { breadcrumbs.push(args); }
+      });
+      assert.equal(parsed.context, undefined);
+      assert.equal(parsed.jobId, "job-1");
+      assert.deepEqual(breadcrumbs, [[]]);
+    }
+  });
+
+  it("caches bootstrap context, replaces it only after success, and never logs or polls it", async () => {
+    const dek = generateProofLogEncryptionKey();
+    const loggingRecords: unknown[] = [];
+    const diagnosticRecords: unknown[] = [];
+    const paths: string[] = [];
+    let refreshes = 0;
+    let timers = 0;
+    let byte = 6;
+    const refreshed = { ...contextBootstrapFixture.context, serverTimeMs: 2000,
+      network: { ...contextBootstrapFixture.context.network, observedWanIp: "203.0.113.43" } };
+    const handle = await bootstrapSlipwayRuntime({
+      env: { BLACKBOX_LOG_CONFIG: JSON.stringify({ factoryToken: "bbx_sf_test_secret",
+        baseUrl: "https://logging.slipway.proof.computer", applicationId: "generic-worker", dek }) },
+      std: blackboxRuntimeStd(), identityProvider: fakeIdentityProvider(),
+      bootstrap: { mode: "signed", coreUrl: "https://core.test" },
+      secrets: { mode: "off" }, logging: { mode: "required", spoolMode: "memory" },
+      runtimeHealth: { intervalMs: 0 }, nowMs: () => 1000,
+      randomBytes: (size) => new Uint8Array(size).fill(++byte),
+      diagnostics: (event) => { diagnosticRecords.push(event); },
+      setTimeoutImpl: ((...args: Parameters<typeof setTimeout>) => {
+        timers++;
+        return setTimeout(...args);
+      }) as typeof setTimeout,
+      fetchImpl: (async (url, init) => {
+        const path = new URL(String(url)).pathname;
+        paths.push(path);
+        if (path === "/api/jobs/runtime-bootstrap") return jsonResponse(contextBootstrapFixture);
+        if (path === "/api/jobs/runtime-diagnostics") {
+          diagnosticRecords.push(JSON.parse(String(init?.body)));
+          return jsonResponse({ ok: true });
+        }
+        if (path === "/api/jobs/runtime-context") {
+          refreshes++;
+          if (refreshes === 2) return new Response(JSON.stringify({ error: "runtime_context_rate_limited" }), { status: 429 });
+          const request = JSON.parse(String(init?.body));
+          return jsonResponse({ ok: true, domain: "proof.liskov.runtime-context-response.v1", requestNonce: request.nonce,
+            jobId: request.jobId, processorId: request.processorId, applicationUid: APPLICATION_UID, context: refreshed });
+        }
+        if (path.endsWith("/job-sinks")) return blackboxRegistration("context-test");
+        if (path.endsWith("/events")) {
+          const batch = JSON.parse(String(init?.body)) as BlackboxLogBatch;
+          loggingRecords.push(...batch.encrypted.map((item) => decryptProofLogRecord(dek, item)));
+          return blackboxWriteResponse(init);
+        }
+        throw new Error(`Unexpected path ${path}`);
+      }) as typeof fetch
+    });
+    try {
+      assert.deepEqual(handle.context, contextBootstrapFixture.context);
+      assert.ok(Object.isFrozen(handle.context));
+      assert.equal(paths.includes("/api/jobs/runtime-context"), false);
+      await handle.log("context-test", { ok: true });
+      assert.equal(loggingRecords.length, 1); // Exercise the logger stub before checking no extra writes.
+      const loggerCalls = loggingRecords.length;
+      const diagnosticCalls = diagnosticRecords.length;
+      const scheduled = timers;
+      assert.deepEqual(await handle.refreshRuntimeContext(), refreshed);
+      assert.deepEqual(handle.context, refreshed);
+      await assert.rejects(handle.refreshRuntimeContext(), { name: "LiskovRuntimeContextRefusedError", retryable: true });
+      assert.deepEqual(handle.context, refreshed);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(refreshes, 2);
+      assert.equal(timers, scheduled);
+      assert.equal(loggingRecords.length, loggerCalls);
+      assert.equal(diagnosticRecords.length, diagnosticCalls);
+      const records = JSON.stringify([loggingRecords, diagnosticRecords]);
+      assert.equal(records.includes("203.0.113.42"), false);
+      assert.equal(records.includes("203.0.113.43"), false);
+      assert.equal(records.includes("proof.liskov.runtime-context.v1"), false);
+    } finally { handle.stop(); }
+  });
+
+  it("reports malformed optional context without failing bootstrap or leaking the IP", async () => {
+    const events: Array<{ code?: string }> = [];
+    const handle = await bootstrapSlipwayRuntime({
+      env: {}, identityProvider: fakeIdentityProvider(), bootstrap: { mode: "signed", coreUrl: "https://core.test" },
+      secrets: { mode: "off" }, logging: { mode: "off" }, runtimeHealth: { intervalMs: 0 },
+      diagnostics: (event) => { events.push(event); },
+      fetchImpl: (async (url) => new URL(String(url)).pathname === "/api/jobs/runtime-bootstrap"
+        ? jsonResponse({ ...contextBootstrapFixture,
+          context: { ...contextBootstrapFixture.context, serverTimeMs: "203.0.113.42" } })
+        : jsonResponse({ ok: true })) as typeof fetch
+    });
+    try {
+      assert.equal(handle.context, undefined);
+      assert.equal(events.filter((event) => event.code === "runtime_context_invalid").length, 1);
+      assert.equal(JSON.stringify(events).includes("203.0.113.42"), false);
+    } finally { handle.stop(); }
+  });
+
+  it("allows an explicit refresh against an older bootstrap without context", async () => {
+    const { context: _context, ...older } = contextBootstrapFixture;
+    const handle = await bootstrapSlipwayRuntime({
+      env: {}, identityProvider: fakeIdentityProvider(), bootstrap: { mode: "signed", coreUrl: "https://core.test" },
+      secrets: { mode: "off" }, logging: { mode: "off" }, runtimeHealth: { intervalMs: 0 },
+      fetchImpl: (async (url, init) => {
+        const path = new URL(String(url)).pathname;
+        if (path === "/api/jobs/runtime-bootstrap") return jsonResponse(older);
+        if (path === "/api/jobs/runtime-context") {
+          const request = JSON.parse(String(init?.body));
+          return jsonResponse({ ok: true, domain: "proof.liskov.runtime-context-response.v1", requestNonce: request.nonce,
+            jobId: request.jobId, processorId: request.processorId, applicationUid: APPLICATION_UID,
+            context: contextBootstrapFixture.context });
+        }
+        return jsonResponse({ ok: true });
+      }) as typeof fetch
+    });
+    try {
+      assert.equal(handle.context, undefined);
+      assert.deepEqual(await handle.refreshRuntimeContext(), contextBootstrapFixture.context);
+      assert.deepEqual(handle.context, contextBootstrapFixture.context);
+    } finally { handle.stop(); }
+  });
+
+  it("refuses refresh before a signed bootstrap binds the job", async () => {
+    let calls = 0;
+    const handle = await bootstrapSlipwayRuntime({ env: {}, bootstrap: { mode: "off" }, logging: { mode: "off" },
+      identityProvider: fakeIdentityProvider(), fetchImpl: (async () => { calls++; return jsonResponse({}); }) as typeof fetch });
+    try {
+      assert.equal(handle.context, undefined);
+      await assert.rejects(handle.refreshRuntimeContext(), SlipwayRuntimeNotReadyError);
+      assert.equal(calls, 0);
+    } finally { handle.stop(); }
+  });
+});
 
 describe("top-level Slipway runtime bootstrap", () => {
   it("loads Slipway runtime env before Lockbox secrets and returns a refresh handle", async () => {

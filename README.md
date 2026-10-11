@@ -16,6 +16,25 @@ runtime and provides the default Liskov boot path:
 - Bounded Liskov runtime diagnostics and health events.
 - Runtime readiness/status and test hooks.
 
+## Runtime context
+
+The next SDK release exposes a read-only snapshot from signed bootstrap:
+
+```ts
+const runtime = await bootstrapSlipwayRuntime();
+const applicationUid = runtime.context?.application.uid;
+const updatedContext = await runtime.refreshRuntimeContext();
+```
+
+`context` is `undefined` when the server omits it. `application.uid` is the
+stable key; `name` and `displayName` are labels. The WAN IP and IP-derived
+geography describe this job's observed network; check the geolocation status
+before treating it as current. Refresh makes one signed request and replaces
+the snapshot only on success. It starts no polling or backoff and never logs
+the context. `LiskovRuntimeContextRefusedError` carries `code`, `status`, and
+`retryable` (`429`/`503` are retryable; replay `409` is not). A refresh requires
+a signed bootstrap binding; otherwise it throws `SlipwayRuntimeNotReadyError`.
+
 ## Install
 
 The first supported dependency source is the public GitHub release tag:

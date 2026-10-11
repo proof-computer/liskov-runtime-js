@@ -19,6 +19,7 @@ import {
   liskovSignedBootstrapUrls,
   loadLiskovRuntimeBootstrap,
   loadLiskovSecretBootstrap,
+  type LiskovRuntimeBootstrapLoadResult,
   type LiskovSignedBootstrapRetryOptions,
   type LiskovSignedBootstrapMode
 } from "./bootstrap.js";
@@ -48,6 +49,7 @@ import {
   type SlipwayRuntimeEnvRefreshHandle
 } from "./runtime-env.js";
 import { safeErrorMessage, type RuntimeRandomBytes } from "./shared.js";
+import { refreshLiskovRuntimeContext, type LiskovRuntimeContext } from "./runtime-context.js";
 
 export * from "./acurast.js";
 export * from "./node-http-fetch.js";
@@ -63,6 +65,7 @@ export * from "./proof-log-crypto.js";
 export * from "./processor-coverage.js";
 export { collectNetworkSample, networkSampleOutcomes, type NetworkTransport, type CollectNetworkSampleOptions, type NetworkPreparation } from "./network-prober.js";
 export * from "./runtime-env.js";
+export * from "./runtime-context.js";
 
 export type SlipwayRuntimeCapabilityState = "off" | "pending" | "ready" | "degraded" | "failed" | "blocked";
 export type SlipwayRuntimeSecretMode = "required" | "background" | "off";
@@ -190,6 +193,8 @@ export interface BootstrapSlipwayRuntimeOptions {
 export interface BootstrapSlipwayRuntimeHandle {
   readonly home: string;
   readonly env: SlipwayRuntimeEnvAccessor;
+  readonly context: LiskovRuntimeContext | undefined;
+  refreshRuntimeContext(): Promise<LiskovRuntimeContext>;
   status(): SlipwayRuntimeStatus;
   whenReady(): Promise<SlipwayRuntimeStatus>;
   log(event: string, details?: Record<string, unknown>, options?: SlipwayRuntimeLogOptions): Promise<void>;
@@ -220,6 +225,8 @@ async function resolveSignedRuntimeBootstrap(input: {
   setRuntimeEnvEnabled(enabled: boolean): void;
   setLockboxConfig(config: NonNullable<ReturnType<typeof readLockboxRuntimeConfig>>): void;
   setFailureStage(stage: BootstrapFailureStage): void;
+  setRuntimeBootstrap(result: LiskovRuntimeBootstrapLoadResult): void;
+  onInvalidContext(): void;
 }): Promise<void> {
   const signedOptions = {
     env: input.env,
@@ -234,13 +241,15 @@ async function resolveSignedRuntimeBootstrap(input: {
     secretsUrl: input.bootstrap?.secretsUrl,
     allowInsecureHttp: input.bootstrap?.allowInsecureHttp,
     requestTtlMs: input.bootstrap?.requestTtlMs,
-    retry: input.bootstrap?.retry
+    retry: input.bootstrap?.retry,
+    onInvalidContext: input.onInvalidContext
   };
   const urls = liskovSignedBootstrapUrls(signedOptions);
   await allowBootstrapHostnames(input.std, [urlHostOrNull(urls.coreUrl), urlHostOrNull(urls.secretsUrl)]);
   input.setFailureStage("runtime_bootstrap");
   const runtimeBootstrap = await loadSignedRuntimeBootstrapOrSkip(input.mode, signedOptions);
   if (!runtimeBootstrap) return;
+  input.setRuntimeBootstrap(runtimeBootstrap);
   if (runtimeBootstrap.customerSecretsRequired !== undefined) {
     input.setDefaultSecretsMode(runtimeBootstrap.customerSecretsRequired ? "required" : "background");
   }
@@ -327,6 +336,9 @@ export async function bootstrapSlipwayRuntime(
   // sent no health beat at all, so core read every one as contact lost).
   let runtimeEnvEnabled = slipwayConfig !== undefined;
   let lockboxConfig = readLockboxRuntimeConfig(legacyBootstrapLookup);
+  let runtimeBootstrap: LiskovRuntimeBootstrapLoadResult | undefined;
+  let context: LiskovRuntimeContext | undefined;
+  let invalidContext = false;
   const startedAtMs = options.nowMs?.() ?? Date.now();
   const signedUrls = liskovSignedBootstrapUrls({
     env,
@@ -394,10 +406,23 @@ export async function bootstrapSlipwayRuntime(
       },
       setFailureStage: (stage) => {
         failureStage = stage;
+      },
+      setRuntimeBootstrap: (result) => {
+        runtimeBootstrap = result;
+        context = result.response.context;
+      },
+      onInvalidContext: () => {
+        invalidContext = true;
       }
     });
   }
   diagnostics.configureBootstrap(slipwayConfig);
+  if (invalidContext) {
+    await diagnostics.emit({
+      stage: "runtime.context", status: "failed", ok: false,
+      component: "runtime-bootstrap", code: "runtime_context_invalid"
+    });
+  }
   failureStage = "runtime_env";
   const secretsMode = options.secrets?.mode ?? defaultSecretsMode ?? (lockboxConfig === undefined ? "off" : "required");
   const loggingMode = options.logging?.mode ?? "background";
@@ -533,9 +558,28 @@ export async function bootstrapSlipwayRuntime(
     fatalCleanup.push(() => runtimeHealthHandle?.stop());
   }
 
-  return {
+  const handle: BootstrapSlipwayRuntimeHandle = {
     home,
     diagnostics,
+    get context() {
+      return context;
+    },
+    async refreshRuntimeContext() {
+      if (runtimeBootstrap === undefined) throw new SlipwayRuntimeNotReadyError(handle.status());
+      const refreshed = await refreshLiskovRuntimeContext({
+        coreUrl: signedUrls.coreUrl,
+        identityProvider,
+        jobId: runtimeBootstrap.request.jobId,
+        processorId: runtimeBootstrap.request.processorId,
+        applicationUid: runtimeBootstrap.response.applicationUid,
+        fetchImpl: options.fetchImpl,
+        nowMs: options.nowMs,
+        randomBytes: options.randomBytes,
+        allowInsecureHttp: options.bootstrap?.allowInsecureHttp
+      });
+      context = refreshed;
+      return refreshed;
+    },
     get runtimeEnv() {
       return runtimeEnv;
     },
@@ -603,6 +647,7 @@ export async function bootstrapSlipwayRuntime(
       return result;
     }
   };
+  return handle;
   } catch (error) {
     await diagnostics.fatal({
       kind: "bootstrap",

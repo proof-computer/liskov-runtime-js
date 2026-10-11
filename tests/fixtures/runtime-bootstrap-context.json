@@ -1,0 +1,44 @@
+{
+  "ok": true,
+  "domain": "proof.liskov.runtime-bootstrap-response.v2",
+  "applicationUid": "app-0123456789abcdef0123456789abcdef",
+  "applicationId": "generic-worker",
+  "policyDigest": "1111111111111111111111111111111111111111111111111111111111111111",
+  "deploymentId": "42",
+  "jobId": "job-1",
+  "processorId": "processor-1",
+  "slipwayUrl": "https://slipway.test",
+  "runtimeEnv": { "enabled": false },
+  "secrets": { "required": false },
+  "context": {
+    "schema": "proof.liskov.runtime-context.v1",
+    "serverTimeMs": 1000,
+    "application": {
+      "uid": "app-0123456789abcdef0123456789abcdef",
+      "name": "generic-worker",
+      "displayName": null
+    },
+    "deployment": { "liskovDeploymentId": "42", "acurastDeploymentId": null },
+    "job": { "id": "job-1", "scheduleEndsAtMs": null },
+    "processor": { "id": "processor-1" },
+    "policy": {
+      "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+      "versionId": null
+    },
+    "artifact": { "cid": null, "digest": null },
+    "capabilities": { "runtimeEnv": false, "secrets": false, "logging": true, "ingress": false },
+    "network": {
+      "observedWanIp": "203.0.113.42",
+      "observedAtMs": 1000,
+      "geolocation": {
+        "status": "pending",
+        "countryCode": null,
+        "countryName": null,
+        "region": null,
+        "city": null,
+        "asOfMs": null,
+        "accuracy": "ip-derived"
+      }
+    }
+  }
+}
