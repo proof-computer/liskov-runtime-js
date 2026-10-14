@@ -63,6 +63,14 @@ export * from "./lockbox.js";
 export * from "./process-failures.js";
 export * from "./proof-log-crypto.js";
 export * from "./processor-coverage.js";
+export {
+  decodeTraversalCapability,
+  settleJsTraversalGrant,
+  type InjectedTraversalTransport,
+  type JsTraversalSettlement,
+  type NetworkTraversalV1,
+  type TraversalDescriptorV1
+} from "./network-traversal.js";
 export { collectNetworkSample, networkSampleOutcomes, type NetworkTransport, type CollectNetworkSampleOptions, type NetworkPreparation } from "./network-prober.js";
 export * from "./runtime-env.js";
 export * from "./runtime-context.js";

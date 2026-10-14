@@ -1,5 +1,12 @@
 import { normalizeNetworkSample, type NetworkSampleV1 } from "./network-sample.js";
 import { normalizeInboundReachability, type InboundReachabilityV1 } from "./inbound-reachability.js";
+import {
+  normalizeNetworkTraversal,
+  TRAVERSAL_ENVELOPE_MAX_BYTES,
+  TRAVERSAL_SIGNATURE_RESERVE_BYTES,
+  TraversalRefusalError,
+  type NetworkTraversalV1
+} from "./network-traversal.js";
 export type { NetworkSampleV1, NetworkMetrics, NetworkReceipt } from "./network-sample.js";
 export type { InboundReachabilityV1, InboundFamilyVerdict, InboundFamily, InboundVerdict } from "./inbound-reachability.js";
 import { Buffer } from "node:buffer";
@@ -73,6 +80,7 @@ export interface LiskovProcessorCoverageResultV1 {
   outcomes: LiskovProcessorCoverageOutcome[];
   networkSample?: NetworkSampleV1;
   inboundReachability?: InboundReachabilityV1;
+  networkTraversal?: NetworkTraversalV1;
   normalizedMetricDigest: string;
   challenge: string;
   replaySubject: string;
@@ -87,6 +95,7 @@ export function canonicalLiskovProcessorCoverageResultV1(
 ): LiskovProcessorCoverageResultV1 {
   const { signature: _signature, ...unsigned } = input as LiskovSignedProcessorCoverageResultV1;
   const record = unsigned as unknown as Record<string, unknown>;
+  const traversal = record.networkTraversal;
   if (unsigned.domain !== LISKOV_PROCESSOR_COVERAGE_RESULT_DOMAIN_V1) {
     throw new Error(`domain must be ${LISKOV_PROCESSOR_COVERAGE_RESULT_DOMAIN_V1}`);
   }
@@ -100,7 +109,7 @@ export function canonicalLiskovProcessorCoverageResultV1(
     throw new Error(`outcomes must contain between 1 and ${MAX_OUTCOMES} entries`);
   }
 
-  return {
+  const canonical: LiskovProcessorCoverageResultV1 = {
     domain: LISKOV_PROCESSOR_COVERAGE_RESULT_DOMAIN_V1,
     applicationId: requiredString(record, "applicationId"),
     policyVersionId: requiredString(record, "policyVersionId"),
@@ -121,6 +130,7 @@ export function canonicalLiskovProcessorCoverageResultV1(
     ...(unsigned.inboundReachability === undefined
       ? {}
       : { inboundReachability: normalizeInboundReachability(unsigned.inboundReachability) }),
+    ...(traversal == null ? {} : { networkTraversal: normalizeCoverageTraversal(traversal) }),
     normalizedMetricDigest: normalizeSha256Digest(
       unsigned.normalizedMetricDigest,
       "normalizedMetricDigest"
@@ -128,6 +138,22 @@ export function canonicalLiskovProcessorCoverageResultV1(
     challenge: normalizeHex(requiredString(record, "challenge")),
     replaySubject: requiredString(record, "replaySubject")
   };
+  if (canonical.networkTraversal !== undefined) {
+    const envelopeBytes = Buffer.byteLength(canonicalJson(canonical), "utf8");
+    if (envelopeBytes > TRAVERSAL_ENVELOPE_MAX_BYTES - TRAVERSAL_SIGNATURE_RESERVE_BYTES) {
+      throw new Error("networkTraversal envelope: Oversize");
+    }
+  }
+  return canonical;
+}
+
+function normalizeCoverageTraversal(value: unknown): NetworkTraversalV1 {
+  try {
+    return normalizeNetworkTraversal(value);
+  } catch (error) {
+    if (error instanceof TraversalRefusalError) throw new Error(`networkTraversal: ${error.code}`);
+    throw error;
+  }
 }
 
 export function liskovProcessorCoverageResultV1Message(
