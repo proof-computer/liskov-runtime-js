@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { Buffer } from "node:buffer";
@@ -12,15 +13,20 @@ import {
   decodeTraversalCapability,
   normalizeNetworkTraversal,
   settleJsTraversalGrant,
+  TRAVERSAL_CAPABILITY_DOMAIN,
+  traversalDescriptorDigest,
   type InjectedTraversalTransport,
-  type TraversalDescriptorV1
+  type TraversalDescriptorV1,
+  type TraversalOperation,
+  type TraversalPhaseV1
 } from "../src/network-traversal.js";
+import { canonicalJson } from "../src/shared.js";
 
 const VECTOR = JSON.parse(
   readFileSync(new URL("./vectors/network-traversal-v1.json", import.meta.url), "utf8")
 ) as {
   testOnlyMacKeyHex: string;
-  descriptors: Array<{ name: string; canonicalCapability: string; descriptor: TraversalDescriptorV1 }>;
+  descriptors: Array<{ name: string; descriptorDigest: string; canonicalCapability: string; descriptor: TraversalDescriptorV1 }>;
   results: Array<{ name: string; networkTraversal: unknown }>;
   coverageResult: LiskovProcessorCoverageResultV1;
   canonicalCoverageSigningPayload: string;
@@ -48,6 +54,30 @@ function spies() {
     bandwidthLadder: () => { calls.bandwidth += 1; },
     mutateRouter: () => { calls.mutation += 1; }
   };
+}
+
+/** Owner phase_operation (liskov-rs network_traversal/proof.rs). Discovery wins before method. */
+function ownerPhaseOperation(phase: Pick<TraversalPhaseV1, "stage" | "method" | "transport">): TraversalOperation {
+  if (phase.stage === "mapping_behaviour") return "observe_mapping";
+  if (phase.stage === "filtering_behaviour") return "observe_filtering";
+  if (phase.stage === "discovery") return "discover_gateway";
+  if (phase.stage === "baseline" && phase.transport === "tcp") return "baseline_tcp";
+  if (phase.stage === "baseline" && phase.transport === "udp") return "baseline_udp";
+  if (phase.stage === "endpoint_registration") return "register_endpoint";
+  if (phase.stage === "direct") return "pair_direct_udp";
+  if (phase.stage === "relay_control") return "pair_relay_control";
+  if (phase.method === "pcp") return "map_pcp";
+  if (phase.method === "nat_pmp") return "map_nat_pmp";
+  if (phase.method === "upnp_igd") return "map_upnp";
+  throw new Error(`unmapped phase ${phase.stage}/${phase.method}/${phase.transport}`);
+}
+
+function capabilityFor(descriptor: TraversalDescriptorV1): string {
+  const mac = createHmac("sha256", macKey)
+    .update(Buffer.from(`${TRAVERSAL_CAPABILITY_DOMAIN}\0`, "utf8"))
+    .update(Buffer.from(canonicalJson(descriptor), "utf8"))
+    .digest("hex");
+  return canonicalJson({ domain: TRAVERSAL_CAPABILITY_DOMAIN, descriptor, mac });
 }
 
 describe("owner traversal vectors", () => {
@@ -86,6 +116,7 @@ describe("owner traversal vectors", () => {
 
   it("decodes every owner capability with the test MAC key", () => {
     for (const entry of VECTOR.descriptors) {
+      assert.equal(traversalDescriptorDigest(entry.descriptor), entry.descriptorDigest);
       const now = entry.descriptor.issuedAtMs + 1000;
       const decoded = decodeTraversalCapability(entry.canonicalCapability, macKey, now);
       assert.equal(decoded.runId, entry.descriptor.runId);
@@ -170,5 +201,43 @@ describe("JS traversal grants", () => {
     assert.equal(capped.probe.sent.length, 0);
     assert.equal(capped.effect.calls.mutation, 0);
     assert.equal(capped.effect.calls.bandwidth, 0);
+  });
+
+  it("settles every owner descriptor to one distinct phase per operation", () => {
+    for (const entry of VECTOR.descriptors) {
+      const now = entry.descriptor.issuedAtMs + 1000;
+      const { settlement, probe, effect } = settle(entry.canonicalCapability, now, {
+        claim: entry.descriptor.claimAuthorityDigest
+      });
+      assert.equal(settlement.effects, "unsupported");
+      assert.equal(settlement.routerMutationAuthorized, false);
+      assert.equal(probe.sent.length, 0);
+      assert.equal(effect.calls.bandwidth, 0);
+      assert.equal(effect.calls.mutation, 0);
+      const phases = settlement.networkTraversal?.phases ?? [];
+      const recovered = phases.map(ownerPhaseOperation);
+      assert.deepEqual(recovered, entry.descriptor.operations);
+      assert.equal(new Set(recovered).size, recovered.length);
+    }
+  });
+
+  it("reports map_pcp without discover_gateway as mapping_create", () => {
+    const mapping = VECTOR.descriptors.find((entry) => entry.name === "mapping");
+    assert.ok(mapping);
+    const descriptor = structuredClone(mapping.descriptor);
+    descriptor.operations = ["map_pcp"];
+    const now = descriptor.issuedAtMs + 1000;
+    const { settlement, probe, effect } = settle(capabilityFor(descriptor), now, {
+      claim: descriptor.claimAuthorityDigest
+    });
+    assert.equal(probe.sent.length, 0);
+    assert.equal(effect.calls.bandwidth, 0);
+    assert.equal(effect.calls.mutation, 0);
+    const phases = settlement.networkTraversal?.phases ?? [];
+    assert.equal(phases.length, 1);
+    assert.equal(phases[0]?.stage, "mapping_create");
+    assert.equal(phases[0]?.method, "pcp");
+    assert.equal(phases[0]?.outcome, "unsupported_runtime_api");
+    assert.equal(ownerPhaseOperation(phases[0]!), "map_pcp");
   });
 });

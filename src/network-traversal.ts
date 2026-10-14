@@ -261,6 +261,11 @@ export interface JsTraversalSettlement {
   primitives: TraversalPrimitive[];
 }
 
+// The owner's phase_operation maps every discovery stage to discover_gateway,
+// then maps pcp / nat_pmp / upnp_igd to map_*. Mapping primitives therefore use
+// mapping_create. discover_gateway's method "pcp" and the settled family "v4"
+// are placeholders for an unsupported runtime: this slice does not speak PCP
+// and does not observe an address family. The outcome stays unsupported_runtime_api.
 const OPERATION_PRIMITIVE: Record<TraversalOperation, { primitive: TraversalPrimitive; stage: string; method: string; transport: string; authority: string }> = {
   discover_gateway: { primitive: "gateway", stage: "discovery", method: "pcp", transport: "router_control", authority: "device_reported_router" },
   observe_mapping: { primitive: "socket", stage: "mapping_behaviour", method: "udp_mapping", transport: "udp", authority: "prober_observed_behaviour" },
@@ -268,9 +273,9 @@ const OPERATION_PRIMITIVE: Record<TraversalOperation, { primitive: TraversalPrim
   baseline_tcp: { primitive: "listener", stage: "baseline", method: "unassisted", transport: "tcp", authority: "external_path" },
   baseline_udp: { primitive: "listener", stage: "baseline", method: "unassisted", transport: "udp", authority: "external_path" },
   register_endpoint: { primitive: "listener", stage: "endpoint_registration", method: "pair", transport: "udp", authority: "prober_observed_registration" },
-  map_pcp: { primitive: "gateway", stage: "discovery", method: "pcp", transport: "router_control", authority: "device_reported_router" },
-  map_nat_pmp: { primitive: "gateway", stage: "discovery", method: "nat_pmp", transport: "router_control", authority: "device_reported_router" },
-  map_upnp: { primitive: "gateway", stage: "discovery", method: "upnp_igd", transport: "router_control", authority: "device_reported_router" },
+  map_pcp: { primitive: "gateway", stage: "mapping_create", method: "pcp", transport: "router_control", authority: "device_reported_router" },
+  map_nat_pmp: { primitive: "gateway", stage: "mapping_create", method: "nat_pmp", transport: "router_control", authority: "device_reported_router" },
+  map_upnp: { primitive: "gateway", stage: "mapping_create", method: "upnp_igd", transport: "router_control", authority: "device_reported_router" },
   pair_direct_udp: { primitive: "socket", stage: "direct", method: "pair", transport: "udp", authority: "helper_observed_peer" },
   pair_relay_control: { primitive: "socket", stage: "relay_control", method: "pair", transport: "relay_control", authority: "helper_observed_peer" }
 };
@@ -893,6 +898,7 @@ export function settleJsTraversalGrant(input: {
       stage: template.stage,
       method: template.method,
       transport: template.transport,
+      // Placeholder family. See OPERATION_PRIMITIVE: no address family was observed.
       family: "v4",
       authority: template.authority,
       outcome: "unsupported_runtime_api",
