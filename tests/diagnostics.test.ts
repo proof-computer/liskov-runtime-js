@@ -412,6 +412,74 @@ describe("runtime-instance v3 diagnostics", () => {
   });
 });
 
+describe("application readiness diagnostics", () => {
+  it("signs readiness on every V4 send, including terminal and bounded custom reports", async () => {
+    const calls: RecordedCall[] = [];
+    const signed: string[] = [];
+    const emitter = createSlipwayRuntimeDiagnosticEmitter({
+      coreUrl: "https://liskov.test",
+      bootstrap: baseBootstrap({
+        runtimeInstanceId: "instance-new",
+        applicationUid: "app-0123456789abcdef0123456789abcdef"
+      }),
+      applicationReadiness: true,
+      identityProvider: recordingIdentityProvider(signed),
+      fetchImpl: recordingFetch(calls),
+      nowMs: () => FIXED_NOW
+    });
+    await emitter.report({ stage: "runtime.start", status: "info", attrs: { applicationReadiness: "ready" } });
+    await emitter.report({ stage: "runtime.health", status: "info" });
+    assert.doesNotThrow(() => { emitter.applicationReady(); emitter.applicationReady(); });
+    await emitter.report({ stage: "runtime.health", status: "info" });
+    await emitter.report({
+      stage: "application.serving", status: "succeeded",
+      attrs: Object.fromEntries(Array.from({ length: 32 }, (_, i) => [`attr${i}`, i]))
+    });
+    await emitter.fatal({ kind: "explicit", code: "application_stopped" });
+    assert.doesNotThrow(() => emitter.applicationReady());
+    assert.equal(calls.length, 5);
+    assert.equal(signed.length, calls.length);
+    for (const [index, call] of calls.entries()) {
+      const { signature, ...body } = call.body;
+      assert.equal(signature, FIXED_SIGNATURE);
+      assert.equal(body.domain, "proof.liskov.runtime-diagnostic.v4");
+      assert.deepEqual(JSON.parse(signed[index]), body);
+      const attrs = body.attrs as Record<string, unknown>;
+      assert.equal(attrs.applicationReadiness, index < 2 ? "pending" : "ready");
+      assert.ok(Object.keys(attrs).length <= 32);
+    }
+    assert.equal(Object.keys(calls[3].body.attrs as object).length, 32);
+    assert.equal((calls[3].body.attrs as Record<string, unknown>).attr0, 0);
+  });
+
+  it("never adds application readiness to v1, v2 or v3, even after applicationReady", async () => {
+    for (const [coreUrl, bootstrap, domain] of [
+      [undefined, baseBootstrap(), "proof.slipway.runtime-diagnostic.v1"],
+      ["https://liskov.test", baseBootstrap(), "proof.liskov.runtime-diagnostic.v2"],
+      ["https://liskov.test", baseBootstrap({ runtimeInstanceId: "instance-new" }), "proof.liskov.runtime-diagnostic.v3"]
+    ] as const) {
+      const calls: RecordedCall[] = [];
+      const signed: string[] = [];
+      const emitter = createSlipwayRuntimeDiagnosticEmitter({
+        coreUrl, bootstrap, applicationReadiness: true,
+        identityProvider: recordingIdentityProvider(signed),
+        fetchImpl: recordingFetch(calls),
+        nowMs: () => FIXED_NOW
+      });
+      await emitter.report({ stage: "runtime.start", status: "info" });
+      await emitter.report({ stage: "runtime.health", status: "info" });
+      emitter.applicationReady();
+      await emitter.report({ stage: "runtime.health", status: "info" });
+      assert.equal(calls.length, 3);
+      for (const call of calls) {
+        assert.equal(call.body.domain, domain);
+        assert.equal((call.body.attrs as Record<string, unknown> | null)?.applicationReadiness, undefined);
+      }
+      assert.equal(signed.some((message) => message.includes("applicationReadiness")), false);
+    }
+  });
+});
+
 describe("UID-bound v4 diagnostics", () => {
   it("matches the cross-language canonical byte vector", () => {
     const payload = canonicalLiskovRuntimeDiagnosticV4Payload({
