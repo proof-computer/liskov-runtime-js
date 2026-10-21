@@ -497,6 +497,71 @@ describe("top-level Slipway runtime bootstrap", () => {
     }
   });
 
+  for (const applicationReadiness of [undefined, false, true]) {
+    it(`reports application readiness only when opted in (${applicationReadiness})`, async () => {
+      const diagnosticBodies: Record<string, unknown>[] = [];
+      const handle = await bootstrapSlipwayRuntime({
+        env: {},
+        bootstrap: { coreUrl: "https://liskov.test" },
+        secrets: { mode: "off" },
+        logging: { mode: "off" },
+        runtimeHealth: { intervalMs: 0 },
+        applicationReadiness,
+        onCease() {},
+        identityProvider: fakeIdentityProvider(),
+        nowMs: () => 1_000,
+        randomBytes: (size) => new Uint8Array(size).fill(7),
+        fetchImpl: (async (url, init) => {
+          const path = new URL(String(url)).pathname;
+          if (path === "/api/jobs/runtime-bootstrap") {
+            return jsonResponse({
+              ...liskovRuntimeBootstrapResponse(),
+              runtimeEnv: { enabled: false, url: "https://slipway.test" }
+            });
+          }
+          if (path === "/api/jobs/runtime-diagnostics") {
+            diagnosticBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+            return jsonResponse({ ok: true });
+          }
+          throw new Error(`unexpected path ${path}`);
+        }) as typeof fetch
+      });
+      try {
+        const start = diagnosticBodies.find((body) => body.stage === "runtime.start");
+        assert.ok(start);
+        assert.equal(Object.keys(start.attrs as object).length, applicationReadiness ? 21 : 20);
+        assert.ok(handle.runtimeHealth);
+        await handle.runtimeHealth.sendNow();
+        assert.equal(diagnosticBodies.at(-1)?.stage, "runtime.health");
+        for (const body of diagnosticBodies) {
+          assert.equal(body.domain, "proof.liskov.runtime-diagnostic.v4");
+          const attrs = body.attrs as Record<string, unknown>;
+          assert.equal(attrs.applicationReadiness, applicationReadiness ? "pending" : undefined);
+          assert.equal(attrs.capabilities, "cooperative_cease.v1");
+          assert.ok(Object.keys(attrs).length <= 32);
+        }
+        // SDK readiness is independent of the application's pending report.
+        assert.equal(handle.status().ready, true);
+        assert.equal((await handle.whenReady()).ready, true);
+        const beforeReady = diagnosticBodies.length;
+        assert.doesNotThrow(() => { handle.applicationReady(); handle.applicationReady(); });
+        assert.equal(diagnosticBodies.length, beforeReady);
+        for (let beat = 0; beat < 2; beat += 1) await handle.runtimeHealth.sendNow();
+        await handle.diagnostics.report({ stage: "application.serving", status: "succeeded" });
+        for (const body of diagnosticBodies.slice(beforeReady)) {
+          const attrs = body.attrs as Record<string, unknown>;
+          assert.equal(attrs.applicationReadiness, applicationReadiness ? "ready" : undefined);
+          assert.equal(attrs.capabilities, "cooperative_cease.v1");
+        }
+        assert.equal(handle.status().ready, true);
+        assert.equal((await handle.whenReady()).ready, true);
+      } finally {
+        handle.stop();
+      }
+      assert.doesNotThrow(() => handle.applicationReady());
+    });
+  }
+
   it("passes cooperative cease through the supported bootstrap options", async () => {
     const diagnosticBodies: Record<string, unknown>[] = [];
     let ceaseCalls = 0;

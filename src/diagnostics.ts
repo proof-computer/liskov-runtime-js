@@ -90,11 +90,14 @@ export interface LiskovRuntimeCeaseCommand {
 
 export interface SlipwayRuntimeDiagnosticEmitter extends LiskovRuntimeDiagnostics {
   emit(event: Omit<SlipwayRuntimeDiagnostic, "sequence" | "timestampMs">): Promise<void>;
+  applicationReady(): void;
   configureBootstrap(bootstrap: SlipwayRuntimeEnvConfig | undefined): void;
   isClosed(): boolean;
 }
 
 export interface SlipwayRuntimeDiagnosticEmitterOptions {
+  /** Opt in to pending/ready application readiness on signed V4 diagnostics. */
+  applicationReadiness?: boolean;
   bootstrap?: SlipwayRuntimeEnvConfig;
   coreUrl?: string;
   allowInsecureHttp?: boolean;
@@ -163,6 +166,8 @@ export function createSlipwayRuntimeDiagnosticEmitter(
   let bootstrap = options.bootstrap;
   let closed = false;
   let fatalPromise: Promise<void> | undefined;
+  let applicationReadinessState: "pending" | "ready" | undefined =
+    options.applicationReadiness === true ? "pending" : undefined;
   const ceaseCommands = new Map<string, CeaseCommandState>();
   const ignoredControls = new Set<string>();
   let emitter: SlipwayRuntimeDiagnosticEmitter;
@@ -211,6 +216,7 @@ export function createSlipwayRuntimeDiagnosticEmitter(
     const remoteSend = sendRemoteDiagnostic({
       ...options,
       bootstrap,
+      applicationReadinessState,
       diagnostic,
       terminal,
       remoteDisabledUntilMs,
@@ -274,6 +280,9 @@ export function createSlipwayRuntimeDiagnosticEmitter(
   };
 
   emitter = {
+    applicationReady() {
+      if (applicationReadinessState !== undefined) applicationReadinessState = "ready";
+    },
     emit(event) {
       if (closed) return Promise.resolve();
       return deliver(prepare(event), false);
@@ -479,6 +488,7 @@ async function sendLocalDiagnostic(
 
 async function sendRemoteDiagnostic(input: SlipwayRuntimeDiagnosticEmitterOptions & {
   bootstrap?: SlipwayRuntimeEnvConfig;
+  applicationReadinessState?: "pending" | "ready";
   diagnostic: SlipwayRuntimeDiagnostic;
   terminal: boolean;
   remoteDisabledUntilMs: number;
@@ -499,6 +509,7 @@ async function sendRemoteDiagnostic(input: SlipwayRuntimeDiagnosticEmitterOption
 
 async function sendLiskovRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitterOptions & {
   coreUrl: string;
+  applicationReadinessState?: "pending" | "ready";
   identityProvider: RuntimeIdentityProvider;
   diagnostic: SlipwayRuntimeDiagnostic;
   handleControl?: (control: unknown, binding: RuntimeControlBinding) => void;
@@ -513,6 +524,18 @@ async function sendLiskovRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitte
   const canReceiveV4Control = input.onCease !== undefined
     && runtimeInstanceId !== undefined
     && applicationUid !== undefined;
+  const applicationReadiness = runtimeInstanceId !== undefined && applicationUid !== undefined
+    ? input.applicationReadinessState
+    : undefined;
+  const attrs: LiskovRuntimeDiagnosticAttrs = {
+    // Reserve a slot before caller attrs so bounding cannot drop readiness.
+    ...(applicationReadiness === undefined ? {} : { applicationReadiness }),
+    ...input.diagnostic.attrs,
+    ...(canReceiveV4Control ? { capabilities: LISKOV_COOPERATIVE_CEASE_CAPABILITY } : {}),
+    ...(input.diagnostic.valueCount === undefined ? {} : { valueCount: input.diagnostic.valueCount }),
+    ...(input.diagnostic.revision === undefined ? {} : { revision: input.diagnostic.revision })
+  };
+  if (applicationReadiness !== undefined) attrs.applicationReadiness = applicationReadiness;
   const payload = canonicalLiskovRuntimeDiagnosticV2Payload({
     jobId: identity.jobId,
     processorId: identity.processorId,
@@ -523,12 +546,7 @@ async function sendLiskovRuntimeDiagnostic(input: SlipwayRuntimeDiagnosticEmitte
     component: input.diagnostic.component ?? null,
     code: input.diagnostic.code ?? null,
     message: input.diagnostic.message ?? input.diagnostic.error ?? null,
-    attrs: {
-      ...input.diagnostic.attrs,
-      ...(canReceiveV4Control ? { capabilities: LISKOV_COOPERATIVE_CEASE_CAPABILITY } : {}),
-      ...(input.diagnostic.valueCount === undefined ? {} : { valueCount: input.diagnostic.valueCount }),
-      ...(input.diagnostic.revision === undefined ? {} : { revision: input.diagnostic.revision })
-    }
+    attrs
   });
   const v3Payload = runtimeInstanceId === undefined
     ? undefined

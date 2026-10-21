@@ -18,7 +18,7 @@ runtime and provides the default Liskov boot path:
 
 ## Runtime context
 
-SDK v0.3.38 exposes a read-only snapshot from signed bootstrap:
+SDK v0.3.39 exposes a read-only snapshot from signed bootstrap:
 
 ```ts
 const runtime = await bootstrapSlipwayRuntime();
@@ -42,7 +42,7 @@ The first supported dependency source is the public GitHub release tag:
 ```json
 {
   "dependencies": {
-    "@proof-computer/liskov-runtime": "github:proof-computer/liskov-runtime-js#v0.3.38"
+    "@proof-computer/liskov-runtime": "github:proof-computer/liskov-runtime-js#v0.3.39"
   }
 }
 ```
@@ -114,6 +114,11 @@ at most once per command in each process, and retries the signed outcome on a
 later check-in if acknowledgement delivery was lost. A new process may handle
 a still-pending command after restart.
 
+Version 0.3.39 adds opt-in application readiness on signed V4 diagnostics.
+Enable `applicationReadiness: true` at bootstrap, then call
+`runtime.applicationReady()` once the application can serve. This is separate
+from SDK readiness (`whenReady()` / `status().ready`).
+
 ## Minimal Entrypoint
 
 Use `bootstrapSlipwayRuntime()` before importing Application code:
@@ -141,6 +146,29 @@ the current status when every required capability is ready, and throws
 `SlipwayRuntimeNotReadyError` with the current status when a required
 capability is pending, failed, or blocked.
 
+### Application readiness
+
+Opt in when the application needs time to load or initialize after SDK bootstrap:
+
+```ts
+const runtime = await bootstrapSlipwayRuntime({ applicationReadiness: true });
+await runtime.whenReady(); // Required SDK capabilities are ready.
+await startApplication(); // Resolves once the application can serve.
+runtime.applicationReady();
+```
+
+With the option, every signed V4 diagnostic, including `runtime.start` and
+`runtime.health`, carries `applicationReadiness: "pending"` until
+`applicationReady()` is called, then `"ready"` on every later diagnostic.
+The method is synchronous, idempotent, never throws, and sends no immediate
+check-in. It does not change `whenReady()` or `status().ready`; those describe
+the SDK's required capabilities, which can be ready while the application is
+still pending. Without the option, the method has no effect and the SDK adds
+no readiness attribute. V1, V2 and V3 diagnostics never add it.
+
+Release and tag the SDK and deploy the server readiness changes before relying
+on this signal to delay predecessor shutdown.
+
 ## Runtime Handle
 
 `bootstrapSlipwayRuntime()` returns:
@@ -154,6 +182,7 @@ interface BootstrapSlipwayRuntimeHandle {
   };
   status(): SlipwayRuntimeStatus;
   whenReady(): Promise<SlipwayRuntimeStatus>;
+  applicationReady(): void;
   log(
     event: string,
     details?: Record<string, unknown>,
@@ -168,7 +197,7 @@ interface BootstrapSlipwayRuntimeHandle {
 Additional readback fields are present for diagnostics and tests:
 `runtimeEnv`, `lockbox` (the secrets readback, under its compatibility key), and
 `runtimeHealth`. They are diagnostic fields, not the product API; application
-code should normally use `env`, `status`, `whenReady`, `log`, `flush`,
+code should normally use `env`, `status`, `whenReady`, `applicationReady`, `log`, `flush`,
 `refreshNow`, and `stop`.
 
 `stop()` is synchronous and idempotent for the current handle shape. It cancels
@@ -219,6 +248,9 @@ Common options:
   runtime-diagnostic delivery.
 - `runtimeHealth`: optional interval/initial-delay/send-timeout overrides for
   `runtime.health` diagnostics.
+- `applicationReadiness`: opt in with `true` to report application readiness
+  on signed V4 diagnostics. Defaults to off; call `applicationReady()` once
+  the application can serve.
 - `onCease`: asynchronous cooperative application-work shutdown. Registering
   it advertises `cooperative_cease.v1` on UID-bound V4 diagnostics; Liskov never
   stops the paid on-chain job.

@@ -181,6 +181,8 @@ export interface BootstrapSlipwayRuntimeOptions {
   nowMs?: () => number;
   randomBytes?: RuntimeRandomBytes;
   diagnostics?: (event: SlipwayRuntimeDiagnostic) => void | Promise<void>;
+  /** Report pending on V4 diagnostics until applicationReady() is called. */
+  applicationReadiness?: boolean;
   /**
    * Cooperative application-work shutdown. Registering this callback advertises
    * cooperative_cease.v1. The callback runs at most once per command in each
@@ -205,6 +207,8 @@ export interface BootstrapSlipwayRuntimeHandle {
   refreshRuntimeContext(): Promise<LiskovRuntimeContext>;
   status(): SlipwayRuntimeStatus;
   whenReady(): Promise<SlipwayRuntimeStatus>;
+  /** Mark an opted-in application ready. Idempotent; does not check SDK readiness. */
+  applicationReady(): void;
   log(event: string, details?: Record<string, unknown>, options?: SlipwayRuntimeLogOptions): Promise<void>;
   flush(): Promise<SlipwayRuntimeFlushResult>;
   stop(): void;
@@ -378,6 +382,7 @@ export async function bootstrapSlipwayRuntime(
     fetchImpl: options.fetchImpl,
     nowMs: options.nowMs,
     diagnostics: options.diagnostics,
+    applicationReadiness: options.applicationReadiness,
     onCease: options.onCease,
     diagnosticSendTimeoutMs: options.diagnosticSendTimeoutMs ?? options.runtimeHealth?.sendTimeoutMs,
     diagnosticRemoteBackoffMs: options.diagnosticRemoteBackoffMs,
@@ -569,6 +574,9 @@ export async function bootstrapSlipwayRuntime(
   const handle: BootstrapSlipwayRuntimeHandle = {
     home,
     diagnostics,
+    applicationReady() {
+      diagnostics.applicationReady();
+    },
     get context() {
       return context;
     },
