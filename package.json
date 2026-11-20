@@ -13,7 +13,7 @@
   "bugs": {
     "url": "https://github.com/proof-computer/liskov-runtime-js/issues"
   },
-  "license": "FSL-1.1-Apache-2.0",
+  "license": "FSL-1.1-ALv2",
   "engines": {
     "node": ">=22"
   },

@@ -747,7 +747,7 @@ runtime-env refresh stays off for those jobs; only the check-ins run.
 
 From v0.3.34, this package is licensed under the
 [Functional Source License, Version 1.1, ALv2 Future License](LICENSE)
-(SPDX `FSL-1.1-Apache-2.0`). The licensor is Moose Labs Ltd. You may use,
+(SPDX `FSL-1.1-ALv2`). The licensor is Moose Labs Ltd. You may use,
 copy, modify, and redistribute the SDK for any purpose other than a Competing
 Use, as the license defines it. Building and running your own Applications on
 it is a Permitted Purpose. Each version becomes available under the

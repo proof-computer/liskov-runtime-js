@@ -6,6 +6,7 @@ interface PackageJson {
   name?: string;
   version?: string;
   private?: boolean;
+  license?: string;
   repository?: { type?: string; url?: string };
   files?: string[];
   scripts?: Record<string, string>;
@@ -18,6 +19,7 @@ describe("public package metadata", () => {
     assert.equal(packageJson.name, "@proof-computer/liskov-runtime");
     assert.equal(packageJson.version, "0.3.39");
     assert.equal(packageJson.private, false);
+    assert.equal(packageJson.license, "FSL-1.1-ALv2");
     assert.deepEqual(packageJson.repository, {
       type: "git",
       url: "git+https://github.com/proof-computer/liskov-runtime-js.git"
