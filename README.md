@@ -788,3 +788,14 @@ For offline tests, inject a `NetworkTransport` with `elapsedUs`, `prepare`,
 The optional `now` function supplies monotonic milliseconds to the default
 transport. This API uses `node:https`, `node:dns/promises` and `node:dgram`;
 it does not require the global `fetch` function.
+
+## Coverage result webview block
+
+`canonicalLiskovProcessorCoverageResultV1` signs an optional `webview` block on
+`proof.liskov.processor-coverage-result.v1` (ADR-0314). `normalizeWebViewRuntime`
+refuses a block liskov-rs would refuse: `version` is 1, `status` is `observed`,
+`unavailable` or `failed`, `chromeVersion` is present exactly when the status is
+`observed`, `errorCode` is present exactly otherwise, and `durationMs` is an
+integer from 0 to 20000. An envelope that omits the block keeps the canonical
+bytes it had before the block existed. The block never carries a user-agent
+string.
