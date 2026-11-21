@@ -7,8 +7,10 @@ import {
   TraversalRefusalError,
   type NetworkTraversalV1
 } from "./network-traversal.js";
+import { normalizeWebViewRuntime, type WebViewRuntimeV1 } from "./webview-runtime.js";
 export type { NetworkSampleV1, NetworkMetrics, NetworkReceipt } from "./network-sample.js";
 export type { InboundReachabilityV1, InboundFamilyVerdict, InboundFamily, InboundVerdict } from "./inbound-reachability.js";
+export { normalizeWebViewRuntime, type WebViewRuntimeV1, type WebViewStatus, type WebViewErrorCode } from "./webview-runtime.js";
 import { Buffer } from "node:buffer";
 
 import type { RuntimeIdentityProvider } from "./acurast.js";
@@ -81,6 +83,7 @@ export interface LiskovProcessorCoverageResultV1 {
   networkSample?: NetworkSampleV1;
   inboundReachability?: InboundReachabilityV1;
   networkTraversal?: NetworkTraversalV1;
+  webview?: WebViewRuntimeV1;
   normalizedMetricDigest: string;
   challenge: string;
   replaySubject: string;
@@ -96,6 +99,7 @@ export function canonicalLiskovProcessorCoverageResultV1(
   const { signature: _signature, ...unsigned } = input as LiskovSignedProcessorCoverageResultV1;
   const record = unsigned as unknown as Record<string, unknown>;
   const traversal = record.networkTraversal;
+  const webview = record.webview;
   if (unsigned.domain !== LISKOV_PROCESSOR_COVERAGE_RESULT_DOMAIN_V1) {
     throw new Error(`domain must be ${LISKOV_PROCESSOR_COVERAGE_RESULT_DOMAIN_V1}`);
   }
@@ -131,6 +135,7 @@ export function canonicalLiskovProcessorCoverageResultV1(
       ? {}
       : { inboundReachability: normalizeInboundReachability(unsigned.inboundReachability) }),
     ...(traversal == null ? {} : { networkTraversal: normalizeCoverageTraversal(traversal) }),
+    ...(webview === undefined ? {} : { webview: normalizeWebViewRuntime(webview) }),
     normalizedMetricDigest: normalizeSha256Digest(
       unsigned.normalizedMetricDigest,
       "normalizedMetricDigest"

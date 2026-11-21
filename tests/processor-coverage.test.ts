@@ -109,3 +109,10 @@ it("carries the shared inbound reachability block through canonicalization", () 
     assert.throws(() => canonicalLiskovProcessorCoverageResultV1(mutated), /invalid inbound reachability/u);
   }
 });
+
+it("signs the shared webview block byte-for-byte", () => {
+  const vector = JSON.parse(readFileSync(new URL("./vectors/processor-coverage-webview-v1.json", import.meta.url), "utf8")) as { result: LiskovProcessorCoverageResultV1; canonicalSigningPayload: string };
+  const payload = Buffer.from(liskovProcessorCoverageResultV1Message(vector.result)).toString("utf8");
+  assert.equal(payload, vector.canonicalSigningPayload);
+  assert.equal(payload.includes('"webview":{'), true);
+});
